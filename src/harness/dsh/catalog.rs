@@ -158,7 +158,7 @@ impl Dsh {
         let id = string(args, "sessionId")?;
         let session = self.summary(client, id).await?;
         let (records, has_more, through) = history_page(client, id, &args["cursor"]).await?;
-        let mut items = protocol::records(&records, &mut protocol::Cursor::default(), id);
+        let mut items = protocol::history_records(&records, id);
         if args["toolDetail"] == "summary" {
             items = items
                 .iter()
@@ -208,6 +208,7 @@ impl Dsh {
             return Err(Error::unavailable());
         }
         session["archived"] = json!(true);
+        session["archiveAllowed"] = json!(false);
         session["owned"] = json!(false);
         if let Some(live) = self.sessions.lock().unwrap().remove(id) {
             live.stop.cancel();

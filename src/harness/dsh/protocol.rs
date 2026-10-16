@@ -15,7 +15,21 @@ pub fn session(row: &Value, owned: bool, archived: bool) -> Value {
     json!({"id":row["sessionId"],"title":title.as_str().or(title["title"].as_str()).unwrap_or(""),
         "cwd":row["cwd"],"status":if row["running"]==true{"active"}else{"idle"},
         "createdAt":row["createdAt"],"updatedAt":row["updatedAt"],"parentSessionId":row["parentSessionId"],
-        "owned":owned,"resumable":!archived,"forkable":false,"archived":archived})
+        "owned":owned,"resumable":!archived,"forkable":false,"archived":archived,
+        "archiveAllowed":!archived && row["running"] != true})
+}
+pub fn history_records(records: &[Value], session: &str) -> Vec<Value> {
+    let mut cursor = Cursor::default();
+    records
+        .iter()
+        .flat_map(|record| {
+            // Durable messages carry native turn numbers, including pages starting mid-turn.
+            if let Some(turn) = record["event"]["data"]["turn"].as_u64() {
+                cursor.turn = format!("{session}-{turn}");
+            }
+            record_items(&record["event"], &mut cursor, session)
+        })
+        .collect()
 }
 pub fn records(records: &[Value], cursor: &mut Cursor, session: &str) -> Vec<Value> {
     records
@@ -292,6 +306,43 @@ mod tests {
             );
             assert_eq!(output[0]["params"]["turn"]["status"], expected);
             assert!(cursor.turn.is_empty());
+        }
+    }
+    #[test]
+    fn history_turn_ids_follow_native_records_across_rounds_and_page_boundaries() {
+        let records = json!([
+            {"event":{"seq":10,"type":"assistant/message","data":{"turn":7,"content":[{"type":"text","text":"prior reply"}]}}},
+            {"event":{"seq":11,"type":"turn/start","data":{"turn":8}}},
+            {"event":{"seq":12,"type":"user/message","data":{"turn":8,"content":[{"type":"text","text":"next question"}]}}},
+            {"event":{"seq":13,"type":"assistant/message","data":{"turn":8,"content":[{"type":"text","text":"next reply"}]}}},
+            {"event":{"seq":14,"type":"turn/start","data":{"turn":9}}},
+            {"event":{"seq":15,"type":"assistant/message","data":{"turn":9,"content":[{"type":"text","text":"last reply"}]}}}
+        ]);
+        let items = super::history_records(records.as_array().unwrap(), "s");
+        assert_eq!(
+            items
+                .iter()
+                .map(|v| v["turnId"].clone())
+                .collect::<Vec<_>>(),
+            json!(["s-7", "s-8", "s-8", "s-9"])
+                .as_array()
+                .unwrap()
+                .clone()
+        );
+        let tail = super::history_records(&records.as_array().unwrap()[3..], "s");
+        assert_eq!(tail[0]["turnId"], items[2]["turnId"]);
+    }
+    #[test]
+    fn native_archive_eligibility_does_not_require_attachment_ownership() {
+        for (running, archived, expected) in [
+            (false, false, true),
+            (true, false, false),
+            (false, true, false),
+        ] {
+            let projected =
+                super::session(&json!({"sessionId":"s","running":running}), false, archived);
+            assert_eq!(projected["archiveAllowed"], expected);
+            assert_eq!(projected["owned"], false);
         }
     }
     #[test]
