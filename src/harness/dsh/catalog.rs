@@ -79,13 +79,19 @@ impl Dsh {
         };
         self.authorized(cwd)
             && workspaces.iter().any(|workspace| {
-                self.config
-                    .workspaces
-                    .iter()
-                    .any(|w| workspace["path"].as_str() == w.path.to_str())
-                    && workspace["sessionIds"]
-                        .as_array()
-                        .is_some_and(|ids| ids.contains(&row["sessionId"]))
+                workspace["path"].as_str().is_some_and(|path| {
+                    self.runtime.as_ref().map_or_else(
+                        || {
+                            self.config
+                                .workspaces
+                                .iter()
+                                .any(|w| Some(path) == w.path.to_str())
+                        },
+                        |runtime| runtime.resolve_cwd(path).is_ok(),
+                    )
+                }) && workspace["sessionIds"]
+                    .as_array()
+                    .is_some_and(|ids| ids.contains(&row["sessionId"]))
             })
     }
 

@@ -14,11 +14,13 @@ root = "/srv/pi-agent-private/projects"
 network = true
 
 [[harnesses]]
-id = "dsh-main"
+id = "dsh"
 kind = "dsh"
 command = "/usr/local/bin/dsh"
 home = "/srv/pi-agent-private/dsh"
 projects = true
+# In multi-principal configurations, also set principal_id = "owner" (or an
+# existing principal). See profiles/dsh.example.toml for an append-only template.
 
 [harnesses.dsh]
 startup_timeout_ms = 120000

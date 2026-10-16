@@ -66,7 +66,28 @@ impl Harnesses {
         self.configs.iter().map(|profile| profile.home.as_path())
     }
     pub fn profiles(&self) -> Value {
-        json!({"epoch":self.epoch,"profiles":self.profiles.values().map(|p| p.driver.descriptor()).collect::<Vec<_>>()})
+        let profiles = self
+            .configs
+            .iter()
+            .map(|config| {
+                let mut descriptor = self.profiles[&config.id].driver.descriptor();
+                if !config.aliases.is_empty() {
+                    descriptor["aliases"] = json!(config.aliases);
+                }
+                descriptor
+            })
+            .collect::<Vec<_>>();
+        json!({"epoch":self.epoch,"profiles":profiles})
+    }
+    fn canonical_args(&self, mut args: Value) -> Result<Value, Error> {
+        let id = string(&args, "profileId")?;
+        let profile = self
+            .configs
+            .iter()
+            .find(|p| p.id == id || p.aliases.iter().any(|alias| alias == id))
+            .ok_or_else(|| Error::not_found("ENOENT"))?;
+        args["profileId"] = json!(profile.id);
+        Ok(args)
     }
     pub async fn authorized_call(
         &self,
@@ -87,6 +108,7 @@ impl Harnesses {
         if !client.legacy() {
             return Err(Error::forbidden("PROJECT_CONTEXT_REQUIRED"));
         }
+        let args = self.canonical_args(args)?;
         if !client.may_harness(string(&args, "profileId")?) {
             return Err(Error::forbidden("EACCES"));
         }
@@ -99,6 +121,7 @@ impl Harnesses {
         if name == "harness_profiles" {
             return Ok(self.profiles());
         }
+        let args = self.canonical_args(args)?;
         let profile = self
             .profiles
             .get(string(&args, "profileId")?)
@@ -120,6 +143,7 @@ impl Harnesses {
         name: &str,
         args: Value,
     ) -> Result<Value, Error> {
+        let args = self.canonical_args(args)?;
         let client = state.auth.try_client(identity)?;
         if !client.may_harness(string(&args, "profileId")?) {
             return Err(Error::forbidden("EACCES"));

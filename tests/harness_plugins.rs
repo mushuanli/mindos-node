@@ -134,6 +134,52 @@ async fn registered_plugins_dispatch_with_shared_receipts_and_shutdown() {
 }
 
 #[tokio::test]
+async fn profile_aliases_share_the_driver_and_canonical_receipts() {
+    let (_root, mut config, plugins, executions, _) = fixture();
+    config.harnesses[0].aliases = vec!["custom-old".into()];
+    let state = State::from_config_with_plugins(&config, plugins).unwrap();
+    let profiles = state.harness.profiles();
+    assert_eq!(profiles["profiles"].as_array().unwrap().len(), 1);
+    assert_eq!(profiles["profiles"][0]["aliases"], json!(["custom-old"]));
+    let mut args = json!({"profileId":"custom-old","epoch":profiles["epoch"],"requestId":"once"});
+    let first = state
+        .harness
+        .call("harness_turn", args.clone())
+        .await
+        .unwrap();
+    args["profileId"] = json!("custom");
+    assert_eq!(
+        state
+            .harness
+            .call("harness_turn", args.clone())
+            .await
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        state.harness.call("harness_operation", args).await.unwrap(),
+        first
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    state.harness.close().await;
+}
+
+#[test]
+fn profile_aliases_cannot_shadow_ids_or_other_aliases() {
+    let (_root, mut config, plugins, _, _) = fixture();
+    for aliases in [vec!["custom"], vec!["old", "old"], vec!["../bad"]] {
+        config.harnesses[0].aliases = aliases.into_iter().map(String::from).collect();
+        assert!(pi_agent::harness::config::validate_with_plugins(&config, &plugins).is_err());
+    }
+    config.harnesses[0].aliases = vec!["other".into()];
+    let mut second = config.harnesses[0].clone();
+    second.id = "other".into();
+    second.aliases.clear();
+    config.harnesses.push(second);
+    assert!(pi_agent::harness::config::validate_with_plugins(&config, &plugins).is_err());
+}
+
+#[tokio::test]
 async fn project_scoped_driver_uses_the_registered_plugin() {
     let (_root, config, plugins, _executions, stops) = fixture();
     let state = State::from_config_with_plugins(&config, plugins).unwrap();

@@ -10,6 +10,8 @@ use std::{collections::HashSet, path::PathBuf};
 #[serde(deny_unknown_fields)]
 pub struct ProfileConfig {
     pub id: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub kind: String,
     #[serde(default = "codex")]
     pub command: String,
@@ -44,9 +46,11 @@ pub fn validate_with_plugins(
     let mut profiles = config.harnesses.clone();
     let mut ids = HashSet::new();
     for profile in &mut profiles {
-        if !ids.insert(profile.id.clone())
-            || !ids::is_identifier(&profile.id)
-            || profile.command.is_empty()
+        if profile.command.is_empty()
+            || profile.aliases.len() > 128
+            || std::iter::once(&profile.id)
+                .chain(profile.aliases.iter())
+                .any(|id| !ids::is_identifier(id) || !ids.insert(id.clone()))
         {
             return Err("Invalid or duplicate harness profile".into());
         }

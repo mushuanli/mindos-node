@@ -28,7 +28,7 @@ pub struct Data {
     pub calls: Mutex<Vec<Value>>,
     pub bus: broadcast::Sender<(String, Value)>,
     pub errors: Mutex<BTreeMap<String, Value>>,
-    root: String,
+    workspaces: Mutex<BTreeMap<String, String>>,
 }
 impl Drop for Host {
     fn drop(&mut self) {
@@ -43,7 +43,10 @@ impl Host {
             records: Mutex::default(),
             calls: Mutex::default(),
             bus: broadcast::channel(1024).0,
-            root: root.to_str().unwrap().into(),
+            workspaces: Mutex::new(BTreeMap::from([(
+                "w1".into(),
+                root.to_str().unwrap().into(),
+            )])),
         });
         state.rows.lock().unwrap().insert(
             "existing".into(),
@@ -123,8 +126,7 @@ async fn socket_loop(socket: WebSocket, state: Arc<Data>) {
                 let (key,value)=match endpoint {
                     "$events"=>("$events".into(),json!({"type":"ready","clientId":"fixture-client"})),
                     "workspace/follow"=>{
-                        let ids=state.rows.lock().unwrap().keys().cloned().collect::<Vec<_>>();
-                        ("workspace".into(),json!({"type":"baseline","value":{"items":[{"workspaceId":"w1","path":state.root,"sessionIds":ids}],"archivedSessionIds":[]}}))
+                        ("workspace".into(),workspace_baseline(&state))
                     }
                     "session/follow"=>{
                         let session=frame["payload"]["args"]["request"]["address"]["sessionId"].as_str().unwrap().to_owned();
@@ -167,12 +169,20 @@ async fn rpc(
         "session/list" => {
             json!({"items":state.rows.lock().unwrap().values().cloned().collect::<Vec<_>>()})
         }
+        "workspace/create" => {
+            let mut workspaces = state.workspaces.lock().unwrap();
+            let id = format!("w{}", workspaces.len() + 1);
+            workspaces.insert(id.clone(), args["request"]["path"].as_str().unwrap().into());
+            json!({"workspace":{"workspaceId":id}})
+        }
         "session/create" => {
+            let workspace = args["request"]["workspaceId"].as_str().unwrap();
+            let cwd = state.workspaces.lock().unwrap()[workspace].clone();
             let mut rows = state.rows.lock().unwrap();
             let id = args["request"]["sessionId"].as_str().unwrap().to_owned();
             rows.insert(
                 id.clone(),
-                json!({"sessionId":id,"cwd":state.root,"running":false}),
+                json!({"sessionId":id,"cwd":cwd,"running":false}),
             );
             json!({"sessionId":id})
         }
@@ -212,4 +222,21 @@ async fn rpc(
     };
     Json(json!({"type":"server-response","rpcId":body["rpcId"],"result":{"ok":true,"value":value}}))
         .into_response()
+}
+
+fn workspace_baseline(state: &Data) -> Value {
+    let workspaces = state.workspaces.lock().unwrap().clone();
+    let rows = state.rows.lock().unwrap();
+    let items = workspaces
+        .iter()
+        .map(|(id, path)| {
+            let ids = rows
+                .values()
+                .filter(|row| row["cwd"].as_str() == Some(path.as_str()))
+                .map(|row| row["sessionId"].clone())
+                .collect::<Vec<_>>();
+            json!({"workspaceId":id,"path":path,"sessionIds":ids})
+        })
+        .collect::<Vec<_>>();
+    json!({"type":"baseline","value":{"items":items,"archivedSessionIds":[]}})
 }

@@ -23,6 +23,7 @@ async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
     config.exports[0].grants[0].access = pi_agent::config::Access::Ro;
     config.exports[0].grants[0].execute = true;
     config.harnesses=vec![toml::from_str(&format!("id='dsh'\nkind='dsh'\nprincipal_id='alice'\nprojects=true\ncommand={command:?}\nhome={home:?}")).unwrap()];
+    config.harnesses[0].aliases = vec!["old-dsh".into()];
     let state = State::from_config(&config).unwrap();
     pi_agent::process::enable(&state).await.unwrap();
     let who = state.auth.index("alice").unwrap();
@@ -35,10 +36,17 @@ async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
     .await
     .unwrap()["project"]
         .clone();
-    let cwd = format!("/projects/{}", project["id"].as_str().unwrap());
-    let host = native::Host::new(std::path::Path::new(&cwd)).await;
+    // Existing native sessions retain their original physical workspace path.
+    let host = native::Host::new(&root.path().join("docs")).await;
     std::fs::write(&command,format!("#!/bin/sh\n[ -f readme.txt ] || exit 8\nif touch forbidden-write 2>/dev/null; then exit 9; fi\nprintf 'dsh web: {}?token=fixture\\n'\nexec sleep 300\n",host.url)).unwrap();
-    let mut args = json!({"profileId":"dsh","projectId":project["id"],"revision":project["revision"],"epoch":state.harness.profiles()["epoch"],"requestId":"create","workspaceId":project["id"]});
+    let mut args = json!({"profileId":"old-dsh","projectId":project["id"],"revision":project["revision"],"epoch":state.harness.profiles()["epoch"],"requestId":"create","workspaceId":project["id"]});
+    let listed = state
+        .harness
+        .project_call(&state, who, "harness_sessions", args.clone())
+        .await
+        .unwrap();
+    assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["sessions"][0]["id"], "existing");
     let created = state
         .harness
         .project_call(&state, who, "harness_create", args.clone())

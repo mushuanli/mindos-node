@@ -163,6 +163,10 @@ retained_files = 5
 
 `kind = "dsh"` 适配 DSH 0.2.0-rc.2 的 `web` profile，协议依据 `deepseek-harness/tui/src/transport/` 及宿主 Session Controller。示例见 [config.dsh.example.toml](config.dsh.example.toml)。无需安装 dsht；Rust 驱动直接交换登录 cookie、调用 HTTP Remote 方法并读取 WebSocket mux，不解析 TUI 屏幕。
 
+已有多身份服务可将 [profiles/dsh.example.toml](profiles/dsh.example.toml) 追加到现有配置，替换实际 command/home，并绑定已有 `principal_id`。`home` 应指向原来的 DSH_HOME；新建空目录不会带入历史会话。0.3.3 的项目列表通过 ProjectRuntime 校验原生 workspace 的物理路径，兼容既有物理目录与 `/projects/<id>` 虚拟路径，并继续拒绝项目之外的会话。配置及二进制更新后重启 pi-agent，再在客户端刷新 MCP 能力；不需要复制历史或重建项目。
+
+默认 profile ID 使用 `codex`、`dsh` 等类型名；Codex 追加式模板见 [profiles/codex.example.toml](profiles/codex.example.toml)。改名可配置 `aliases = ["codex-main"]` 保留旧引用，发现列表仅返回新 ID 及 aliases 元数据。服务先将别名解析为规范 ID，再校验主体权限、选择项目实例及处理回执；旧名称和新名称共享同一实例，不创建重复会话或额外控制进程。别名必须是有效且全局唯一的 profile 标识，不能覆盖其他 profile 或别名。
+
 默认托管模式显式配置 `command` 和已存在的私有 `home`（DSH_HOME），由 pi-agent 延迟启动 `dsh --patch <临时传输配置> --profile web --no-open --host 127.0.0.1 --port 0`，读取 readiness URL 后在内存交换 cookie。临时 overlay 在私有 home 内使用 0600 权限，固定回环地址、随机端口、readiness 输出及禁止打开浏览器，避免用户 profile 的固定绑定覆盖启动参数；进程回收后删除 overlay。请先在该 home 完成 DSH profile 初始化、模型与凭据配置；启动超时默认 120 秒。项目模式 `projects = true` 使用共同 ProjectRuntime/launcher、目录 grants 与文件活动租约；`[projects].network = true` 允许本机控制连接和模型网络。DSH 应安装在沙箱可访问的系统目录；源码开发启动器可能引用沙箱外路径，不能直接当作可部署命令。
 
 已有服务模式设置 `[harnesses.dsh].url`（仅 HTTP(S) origin）及 `token_env`，令牌只在服务端环境解析。该模式必须使用显式 legacy workspaces、`projects = false`，且不能用于多身份项目运行时；已有 DSH 的工具权限由它自己的配置决定。不会结束已有服务进程。DSH 服务需允许该 URL 的 Host；HTTP(S) 与 WS(S) 均使用同一 origin 和 cookie。
