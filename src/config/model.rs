@@ -11,6 +11,8 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub log_level: crate::core::events::Level,
+    #[serde(default)]
+    pub logging: crate::core::log_file::Config,
     pub listen: String,
     /// Optional stable identity; otherwise an ephemeral node identity is generated.
     pub server_id: Option<String>,

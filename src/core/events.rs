@@ -1,10 +1,13 @@
-//! Structured stderr sink and severity filtering; callers choose safe event metadata.
+//! Structured stderr/file sinks and severity filtering; callers choose safe metadata.
 use chrono::{DateTime, Local, SecondsFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     io::Write,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Mutex,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -27,6 +30,24 @@ impl Level {
 }
 
 static LEVEL: AtomicU8 = AtomicU8::new(Level::Info as u8);
+static FILE: Mutex<Option<super::log_file::FileLog>> = Mutex::new(None);
+
+pub fn init_file(
+    config: &super::log_file::Config,
+    path: &std::path::Path,
+) -> std::io::Result<std::path::PathBuf> {
+    let mut sink = FILE.lock().unwrap_or_else(|error| error.into_inner());
+    if sink.is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "Log file already initialized",
+        ));
+    }
+    let log = super::log_file::FileLog::open(config, path)?;
+    let path = log.path().to_path_buf();
+    *sink = Some(log);
+    Ok(path)
+}
 pub fn set_level(level: Level) {
     LEVEL.store(level as u8, Ordering::Relaxed);
 }
@@ -42,6 +63,16 @@ pub fn emit(level: Level, event: &str, fields: Value) {
     // A closed logging sink must not interrupt process supervision or cleanup.
     if let Ok(line) = serde_json::to_string(&record) {
         let _ = writeln!(std::io::stderr().lock(), "{line}");
+        let mut sink = FILE.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(log) = sink.as_mut() {
+            if let Err(error) = log.write_line(&line) {
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "pi-agent log file unavailable: {error}; continuing with stderr"
+                );
+                *sink = None;
+            }
+        }
     }
 }
 

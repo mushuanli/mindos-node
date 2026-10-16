@@ -118,11 +118,25 @@ MindOS 项目右键菜单选择“启用远程命令”后，File Tools 和 Bash
 
 ## 日志
 
-顶层 `log_level = "info"` 为默认值，可设 `trace/debug/info/warn/error/off`。事件输出到 stderr，使用 JSON 行；每行首先输出带毫秒和本机时区偏移的可读 `time`，再输出 level、event、fields，末尾保留 Unix 毫秒 `timeMs` 供程序处理。例如 `{"time":"2026-10-08T13:44:42.034+08:00","level":"info","event":"server.ready","fields":{"address":"127.0.0.1:8787"},"timeMs":1791438282034}`。时区使用服务进程的本地设置，可通过 `TZ` 调整。sync.diagnostics 是每分钟的调试性能汇总，仅在 debug/trace 下输出；普通运行保持 info 即可。
+顶层 `log_level = "info"` 为默认值，可设 `trace/debug/info/warn/error/off`。服务事件同时输出到 stderr 和配置文件所在目录下的 `logs/pi-agent-<启动时间>-<PID>.jsonl`；启动终端打印绝对日志路径，`server.ready` 也记录版本和路径。以 `tools/config.toml` 启动时，默认目录为 `tools/logs/`。启动提示和 API Key 等终端文本不复制到文件，文件只接收结构化事件。
+
+默认单文件 10 MiB，按完整记录轮转为 `.jsonl.1` 至 `.jsonl.4`，每次启动最多保留 5 份（包含当前文件）；旧启动的日志保留供排查，不自动删除。单条记录不截断，可能独自超过大小阈值。日志文件权限为 `0600`，新建目录为 `0700`。事件直接写入文件，不逐条 `fsync`；日志初始化失败时启动报错，运行中写入失败则提示终端并继续 stderr 日志，不中断任务。
+
+可选配置（相对目录以配置文件所在目录为基准，绝对目录也支持）：
+
+```toml
+[logging]
+directory = "logs"
+max_file_bytes = 10485760
+retained_files = 5
+```
+
+事件使用 JSON 行；每行首先输出带毫秒和本机时区偏移的可读 `time`，再输出 level、event、fields，末尾保留 Unix 毫秒 `timeMs` 供程序处理。例如 `{"time":"2026-10-08T13:44:42.034+08:00","level":"info","event":"server.ready","fields":{"address":"127.0.0.1:8787"},"timeMs":1791438282034}`。时区使用服务进程的本地设置，可通过 `TZ` 调整。sync.diagnostics 是每分钟的调试性能汇总，仅在 debug/trace 下输出；普通运行保持 info 即可。
 
 - debug：文件变更/命令准入；info：启动就绪、变更提交、命令启动与成功结束、取消和关闭。
 - warn/error：认证拒绝、HTTP 错误、命令非零退出、超时、启动或清理失败；保留操作/请求 ID、状态和退出码。
 - 原生 Codex RPC 失败输出 `harness.native.failed`：method、rpcCode、稳定 code、durationMs，不记录原生错误全文。`HARNESS_SESSION_BUSY` 表示其他原生实例持有会话写入锁；`HARNESS_INVALID_PARAMS` 对应 -32602，其他未识别原生错误保留 `HARNESS_RPC_ERROR`。读取历史成功不代表能恢复写入。
+- 原生执行记录 `harness.turn.started/completed/failed`，流错误记录 `harness.stream.error`。保留 sessionId、turnId、状态、重试标记及原生提供的错误类别/HTTP 状态码；不复制消息、工具内容或原生错误正文。可与 `http.failed` 的路径、状态和时间对照，区分任务失败与文件接口繁忙。
 - 普通读取、stat、目录列表、能力查询及状态轮询成功时始终静默，包括 trace/debug。读取错误输出 `http.failed`。
 - 不输出 Authorization、口令、请求正文、命令正文或文件内容；命令输出仅记录字节数。进程结束记录是回收后的结果，HTTP 断线不冒充操作已取消。
 

@@ -5,6 +5,7 @@ mod claude;
 mod codex;
 mod codex_delete;
 pub mod config;
+mod diagnostics;
 mod driver;
 mod environment;
 mod events;

@@ -36,6 +36,7 @@ impl Events {
         if let Some(runtime) = &self.runtime {
             runtime.event(&message);
         }
+        super::diagnostics::record(&message);
         self.next += 1;
         self.bytes += size;
         self.entries.push_back((

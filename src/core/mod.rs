@@ -9,4 +9,5 @@ pub mod error;
 pub mod events;
 pub mod gate;
 pub mod ids;
+pub mod log_file;
 pub mod workers;

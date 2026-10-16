@@ -47,6 +47,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let path = launch::resolve(args.first().map(String::as_str))?;
     let config = launch::load(&path)?;
     pi_agent::core::events::set_level(config.log_level);
+    let log_file = pi_agent::core::events::init_file(&config.logging, &path)?;
+    eprintln!("  Log file: {}", log_file.display());
     let state = State::from_config(&config)?;
     // Advertise execution only after the sandbox has been proven to work.
     if config.execution {
@@ -71,6 +73,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         pi_agent::core::events::Level::Info,
         "server.ready",
         json!({"address": listener.local_addr()?.to_string(), "serverId": state.auth.server_id(),
+        "version": env!("CARGO_PKG_VERSION"), "logFile": log_file,
         "execution": config.execution, "exportCount": config.exports.len(), "exports": startup::export_access(&state)}),
     );
     if pi_agent::core::events::enabled(pi_agent::core::events::Level::Info) {
