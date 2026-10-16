@@ -10,7 +10,11 @@ use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
 async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
-    let (root, state) = support::fixture();
+    let directory = tempfile::Builder::new()
+        .prefix("pi-agent-dsh-")
+        .tempdir_in("/var/tmp")
+        .unwrap();
+    let (root, state) = support::fixture_at(directory);
     drop(state);
     let home = root.path().join("alice-dsh");
     std::fs::create_dir(&home).unwrap();
@@ -38,7 +42,7 @@ async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
         .clone();
     // Existing native sessions retain their original physical workspace path.
     let host = native::Host::new(&root.path().join("docs")).await;
-    std::fs::write(&command,format!("#!/bin/sh\n[ -f readme.txt ] || exit 8\nif touch forbidden-write 2>/dev/null; then exit 9; fi\nprintf 'dsh web: {}?token=fixture\\n'\nexec sleep 300\n",host.url)).unwrap();
+    std::fs::write(&command,format!("#!/bin/sh\n[ -f readme.txt ] || exit 8\nif touch forbidden-write 2>/dev/null; then exit 9; fi\n[ -f {source:?}/readme.txt ] || exit 10\nif touch {source:?}/native-forbidden-write 2>/dev/null; then exit 11; fi\n[ ! -e {private:?}/secret.txt ] || exit 12\nprintf 'dsh web: {}?token=fixture\\n'\nexec sleep 300\n",host.url,source=root.path().join("docs"),private=root.path().join("private"))).unwrap();
     let mut args = json!({"profileId":"old-dsh","projectId":project["id"],"revision":project["revision"],"epoch":state.harness.profiles()["epoch"],"requestId":"create","workspaceId":project["id"]});
     let listed = state
         .harness
@@ -85,6 +89,7 @@ async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(!root.path().join("docs/forbidden-write").exists());
+    assert!(!root.path().join("docs/native-forbidden-write").exists());
     let bob = state.auth.index("bob").unwrap();
     assert!(state
         .harness

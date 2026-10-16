@@ -87,6 +87,14 @@ fn network(command: &mut tokio::process::Command) {
         command.args(["--ro-bind-try", path, path]);
     }
 }
+fn project_paths(plan: &mut Plan, cwd: String) {
+    for mount in &mut plan.mounts {
+        if mount.at == "/workspace" || mount.at.starts_with("/workspace/") {
+            mount.at = format!("{}{}", cwd, &mount.at["/workspace".len()..]);
+        }
+    }
+    plan.cwd = cwd;
+}
 fn resolve_command(command: &str) -> Result<PathBuf, Error> {
     if Path::new(command).is_absolute() {
         return Path::new(command).canonicalize().map_err(Error::from);
@@ -164,6 +172,42 @@ impl ProjectRuntime {
         Ok(state)
     }
     pub fn prepare(&self, profile: &ProfileConfig, args: Vec<String>) -> Result<Prepared, Error> {
+        self.prepare_harness(profile, args, false)
+    }
+    pub fn prepare_with_source_paths(
+        &self,
+        profile: &ProfileConfig,
+        args: Vec<String>,
+    ) -> Result<Prepared, Error> {
+        self.prepare_harness(profile, args, true)
+    }
+    fn prepare_harness(
+        &self,
+        profile: &ProfileConfig,
+        args: Vec<String>,
+        source_paths: bool,
+    ) -> Result<Prepared, Error> {
+        let (state, mut plan) = self.harness_plan(profile, args)?;
+        if source_paths {
+            super::source_paths::expose(&state, self.identity, &mut plan)?;
+        }
+        project_paths(&mut plan, self.cwd());
+        let lock = match plan.writer() {
+            Some(export) => export.try_clone_root()?,
+            None => state.execution.lock_handle()?,
+        };
+        state
+            .projects
+            .as_ref()
+            .ok_or_else(Error::unsupported)?
+            .launcher
+            .prepare_harness(&plan, lock, &profile.home)
+    }
+    fn harness_plan(
+        &self,
+        profile: &ProfileConfig,
+        args: Vec<String>,
+    ) -> Result<(Arc<State>, Plan), Error> {
         let state = self.state()?;
         if !state.execution.ready() {
             return Err(Error::unsupported());
@@ -177,28 +221,7 @@ impl ProjectRuntime {
         );
         let mut plan = crate::process::policy::plan(&state, self.identity, &request)?;
         service::pin(&mut plan, &self.project)?;
-        let cwd = self.cwd();
-        for mount in &mut plan.mounts {
-            mount.at = format!(
-                "{}{}",
-                cwd,
-                mount
-                    .at
-                    .strip_prefix("/workspace")
-                    .ok_or_else(Error::invalid)?
-            );
-        }
-        plan.cwd = cwd;
-        let lock = match plan.writer() {
-            Some(export) => export.try_clone_root()?,
-            None => state.execution.lock_handle()?,
-        };
-        state
-            .projects
-            .as_ref()
-            .ok_or_else(Error::unsupported)?
-            .launcher
-            .prepare_harness(&plan, lock, &profile.home)
+        Ok((state, plan))
     }
     pub fn begin(&self, thread: &str, operation: &str) -> Result<(), Error> {
         let state = self.state()?;

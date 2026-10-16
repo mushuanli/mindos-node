@@ -105,7 +105,7 @@ fn prepare(
     ];
     args.extend(arguments());
     let mut prepared = runtime
-        .map(|r| r.prepare(profile, args.clone()))
+        .map(|r| r.prepare_with_source_paths(profile, args.clone()))
         .transpose()?;
     let mut command = match prepared.as_mut() {
         Some(p) => std::mem::replace(&mut p.command, tokio::process::Command::new("/bin/false")),

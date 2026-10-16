@@ -7,6 +7,7 @@ pub mod model;
 pub mod runtime;
 mod search;
 pub mod service;
+mod source_paths;
 mod store;
 mod watch;
 pub use api::call;

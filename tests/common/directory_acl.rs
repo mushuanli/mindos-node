@@ -17,7 +17,9 @@ pub fn config(root: &Path, reversed: bool) -> Config {
     toml::from_str(&format!("listen='127.0.0.1:0'\nexecution=false\nserver_id='directory-acl-test'\n{principals}\n[projects]\nroot={:?}\n[[exports]]\nalias='docs'\npath={:?}\naccess='rw'\npublic=true\n[[exports.grants]]\nprincipal='alice'\naccess='rw'\n[[exports.grants]]\nprincipal='bob'\naccess='ro'\n[[exports]]\nalias='private'\npath={:?}\naccess='rw'\n[[exports.grants]]\nprincipal='alice'\naccess='rw'\n",root.join("catalog"),root.join("docs"),root.join("private"))).unwrap()
 }
 pub fn fixture() -> (tempfile::TempDir, Arc<State>) {
-    let root = tempfile::tempdir().unwrap();
+    fixture_at(tempfile::tempdir().unwrap())
+}
+pub fn fixture_at(root: tempfile::TempDir) -> (tempfile::TempDir, Arc<State>) {
     for name in ["docs", "private"] {
         std::fs::create_dir(root.path().join(name)).unwrap();
     }

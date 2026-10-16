@@ -50,6 +50,31 @@ async fn register(state: &Arc<State>, path: &str, create: bool) -> Value {
     .unwrap()["project"]
         .clone()
 }
+
+#[tokio::test]
+async fn source_aliases_refuse_runtime_paths_without_changing_default_namespaces() {
+    let root = tempfile::tempdir().unwrap();
+    let config = deployment(root.path());
+    let state = State::from_config(&config).unwrap();
+    let project = register(&state, "group/existing", false).await;
+    let stored = state
+        .projects
+        .as_ref()
+        .unwrap()
+        .get(0, project["id"].as_str().unwrap())
+        .unwrap();
+    let runtime = ProjectRuntime::new(&state, 0, stored);
+    state.execution.accept();
+    let mut profile = pi_agent::harness::config::validate(&config)
+        .unwrap()
+        .remove(0);
+    profile.command = "/bin/true".into();
+    match runtime.prepare_with_source_paths(&profile, vec![]) {
+        Ok(_) => panic!("Source aliases must not shadow /tmp"),
+        Err(error) => assert_eq!(error.code, "HARNESS_SOURCE_PATH_UNAVAILABLE"),
+    }
+    assert!(runtime.prepare(&profile, vec![]).is_ok());
+}
 async fn remount(
     state: &Arc<State>,
     project: &Value,

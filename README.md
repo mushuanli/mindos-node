@@ -167,6 +167,8 @@ retained_files = 5
 
 默认 profile ID 使用 `codex`、`dsh` 等类型名；Codex 追加式模板见 [profiles/codex.example.toml](profiles/codex.example.toml)。改名可配置 `aliases = ["codex-main"]` 保留旧引用，发现列表仅返回新 ID 及 aliases 元数据。服务先将别名解析为规范 ID，再校验主体权限、选择项目实例及处理回执；旧名称和新名称共享同一实例，不创建重复会话或额外控制进程。别名必须是有效且全局唯一的 profile 标识，不能覆盖其他 profile 或别名。
 
+0.3.4 的 DSH 项目启动保留授权目录的原物理路径作为兼容别名。只有虚拟路径时，DSH 原生 workspace 会将无法规范化原 cwd 的历史成员过滤为空，即使 session/list 已读到原日志。通用 `ProjectRuntime.prepare_with_source_paths` 从已固定身份的挂载生成等权别名，保留根和嵌套挂载的读写限制，不开放父目录或其他 export；别名再次经过通用目标与权限校验，不允许遮蔽 /tmp 等运行时目录。普通进程与其他驱动的默认命名空间不变，DSH 不绕过成员关系检查。
+
 默认托管模式显式配置 `command` 和已存在的私有 `home`（DSH_HOME），由 pi-agent 延迟启动 `dsh --patch <临时传输配置> --profile web --no-open --host 127.0.0.1 --port 0`，读取 readiness URL 后在内存交换 cookie。临时 overlay 在私有 home 内使用 0600 权限，固定回环地址、随机端口、readiness 输出及禁止打开浏览器，避免用户 profile 的固定绑定覆盖启动参数；进程回收后删除 overlay。请先在该 home 完成 DSH profile 初始化、模型与凭据配置；启动超时默认 120 秒。项目模式 `projects = true` 使用共同 ProjectRuntime/launcher、目录 grants 与文件活动租约；`[projects].network = true` 允许本机控制连接和模型网络。DSH 应安装在沙箱可访问的系统目录；源码开发启动器可能引用沙箱外路径，不能直接当作可部署命令。
 
 已有服务模式设置 `[harnesses.dsh].url`（仅 HTTP(S) origin）及 `token_env`，令牌只在服务端环境解析。该模式必须使用显式 legacy workspaces、`projects = false`，且不能用于多身份项目运行时；已有 DSH 的工具权限由它自己的配置决定。不会结束已有服务进程。DSH 服务需允许该 URL 的 Host；HTTP(S) 与 WS(S) 均使用同一 origin 和 cookie。
@@ -254,7 +256,7 @@ Codex 提供 `harness_rename`、`harness_archive`、`harness_unarchive`、`harne
 
 ### Claude Code
 
-显式配置已安装的 Claude CLI 和已存在的私有目录；`home` 对应 `CLAUDE_CONFIG_DIR`，不会自动读取未配置的 `~/.claude`。项目实例复用 ProjectLauncher 和 Bubblewrap 的目录、mounts、网络授权：
+显式配置已安装的 Claude CLI 和已存在的私有目录；`home` 对应 `CLAUDE_CONFIG_DIR`，不会自动读取未配置的 `~/.claude`。多身份配置的追加式模板见 [profiles/claude.example.toml](profiles/claude.example.toml)，须绑定已有 principal。项目实例复用 ProjectLauncher 和 Bubblewrap 的目录、mounts、网络授权：
 
 ```toml
 [[harnesses]]
