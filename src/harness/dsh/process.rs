@@ -16,6 +16,10 @@ pub struct Connection {
     pub client: Arc<Client>,
     exited: Option<watch::Receiver<bool>>,
 }
+struct Resources {
+    _sandbox: Option<crate::process::sandbox::Prepared>,
+    _overlay: tempfile::NamedTempFile,
+}
 impl Drop for Connection {
     fn drop(&mut self) {
         self.client.stop.cancel();
@@ -93,14 +97,13 @@ async fn launch(
 fn prepare(
     profile: &ProfileConfig,
     runtime: Option<&ProjectRuntime>,
-) -> Result<
-    (
-        tokio::process::Command,
-        Option<crate::process::sandbox::Prepared>,
-    ),
-    Error,
-> {
-    let args = arguments();
+) -> Result<(tokio::process::Command, Resources), Error> {
+    let overlay = overlay(profile)?;
+    let mut args = vec![
+        "--patch".into(),
+        overlay.path().to_str().ok_or_else(Error::invalid)?.into(),
+    ];
+    args.extend(arguments());
     let mut prepared = runtime
         .map(|r| r.prepare(profile, args.clone()))
         .transpose()?;
@@ -113,7 +116,13 @@ fn prepare(
         }
     };
     environment(&mut command, profile, runtime);
-    Ok((command, prepared))
+    Ok((
+        command,
+        Resources {
+            _sandbox: prepared,
+            _overlay: overlay,
+        },
+    ))
 }
 fn environment(
     command: &mut tokio::process::Command,
@@ -149,7 +158,7 @@ fn spawn_supervisor(
     output: tokio::process::ChildStdout,
     ready: oneshot::Sender<(Url, String)>,
     runtime: Option<Arc<ProjectRuntime>>,
-    prepared: Option<crate::process::sandbox::Prepared>,
+    prepared: Resources,
     stop: CancellationToken,
 ) -> watch::Receiver<bool> {
     let (exit, exited) = watch::channel(false);
@@ -238,4 +247,39 @@ fn arguments() -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect()
+}
+fn overlay(profile: &ProfileConfig) -> Result<tempfile::NamedTempFile, Error> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix(".pi-agent-transport-")
+        .suffix(".yml")
+        .tempfile_in(&profile.home)?;
+    file.write_all(b"- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n- id: web-runtime\n  config:\n    openBrowser: false\n    printUrl: true\n")?;
+    file.flush()?;
+    Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn transport_overlay_is_private_and_removed_after_the_child_lifetime() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let profile: ProfileConfig = toml::from_str(&format!(
+            "id='dsh'\nkind='dsh'\ncommand='dsh'\nhome={:?}",
+            home.path()
+        ))
+        .unwrap();
+        let file = overlay(&profile).unwrap();
+        let path = file.path().to_owned();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("host: 127.0.0.1\n    port: 0"));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(file);
+        assert!(!path.exists());
+    }
 }

@@ -84,7 +84,7 @@ impl Dsh {
         let id = self
             .native_create(client, workspace, string(args, "requestId")?)
             .await?;
-        let session = json!({"id":id,"cwd":workspace.path,"title":"","status":"idle","owned":false,"resumable":true,"archived":false});
+        let session = json!({"id":id,"cwd":workspace.path,"title":"","status":"idle","updatedAt":null,"owned":false,"resumable":true,"archived":false});
         self.attach(client, session, Some(slot))
             .await
             .map_err(|_| Error::unavailable())

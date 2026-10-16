@@ -161,13 +161,17 @@ retained_files = 5
 
 `kind = "dsh"` 适配 DSH 0.2.0-rc.2 的 `web` profile，协议依据 `deepseek-harness/tui/src/transport/` 及宿主 Session Controller。示例见 [config.dsh.example.toml](config.dsh.example.toml)。无需安装 dsht；Rust 驱动直接交换登录 cookie、调用 HTTP Remote 方法并读取 WebSocket mux，不解析 TUI 屏幕。
 
-默认托管模式显式配置 `command` 和已存在的私有 `home`（DSH_HOME），由 pi-agent 延迟启动 `dsh --profile web --no-open --host 127.0.0.1 --port 0`，读取 readiness URL 后在内存交换 cookie。请先在该 home 完成 DSH profile 初始化、模型与凭据配置；启动超时默认 120 秒。项目模式 `projects = true` 使用共同 ProjectRuntime/launcher、目录 grants 与文件活动租约；`[projects].network = true` 允许本机控制连接和模型网络。DSH 应安装在沙箱可访问的系统目录；源码开发启动器可能引用沙箱外路径，不能直接当作可部署命令。
+默认托管模式显式配置 `command` 和已存在的私有 `home`（DSH_HOME），由 pi-agent 延迟启动 `dsh --patch <临时传输配置> --profile web --no-open --host 127.0.0.1 --port 0`，读取 readiness URL 后在内存交换 cookie。临时 overlay 在私有 home 内使用 0600 权限，固定回环地址、随机端口、readiness 输出及禁止打开浏览器，避免用户 profile 的固定绑定覆盖启动参数；进程回收后删除 overlay。请先在该 home 完成 DSH profile 初始化、模型与凭据配置；启动超时默认 120 秒。项目模式 `projects = true` 使用共同 ProjectRuntime/launcher、目录 grants 与文件活动租约；`[projects].network = true` 允许本机控制连接和模型网络。DSH 应安装在沙箱可访问的系统目录；源码开发启动器可能引用沙箱外路径，不能直接当作可部署命令。
 
 已有服务模式设置 `[harnesses.dsh].url`（仅 HTTP(S) origin）及 `token_env`，令牌只在服务端环境解析。该模式必须使用显式 legacy workspaces、`projects = false`，且不能用于多身份项目运行时；已有 DSH 的工具权限由它自己的配置决定。不会结束已有服务进程。DSH 服务需允许该 URL 的 Host；HTTP(S) 与 WS(S) 均使用同一 origin 和 cookie。
 
 支持会话列表、历史分页、新建、继续、流式文本/推理、工具摘要、审批/问题回复、中断、重命名及归档。所有变更复用通用 epoch/requestId 回执；原生新建也携带确定性的会话 ID。HTTP 只等提交回执，模型执行由后台流推进；不同会话不共享模型等待锁。默认最多 64 个附着会话、128 个在途 HTTP 请求；WS 队列和重放缓冲有界。网络超时或无法确认的原生错误保持 unknown，不自动重发 prompt。
 
 暂不声明 fork、永久删除、取消归档、附件或用量计价能力；这些操作由能力描述隐藏。断线后该驱动实例拒绝继续写入，重启 pi-agent 后可显式继续原生持久会话；不会自动重放未知操作。托管实例退出时回收其进程组，活动结果不明时按共同文件门闩机制拒绝继续访问。日志复用 pi-agent JSONL，记录生命周期与安全的 DSH 错误代码，不输出 URL 令牌、cookie、prompt 或原生错误正文。
+
+0.3.1 的真实连接验收使用已发布 piagent-driver@0.2.0 → MCP → Rust DSH 驱动 → DSH 0.2.0-rc.2 → DeepSeek `deepseek-v4-flash`。验证新建、跨轮记忆、4 会话同时执行和流式增量隔离；SIGTERM 后托管 DSH 被回收，重启后继续原有会话仍保留上下文。共 10 个模型 turn 成功并持久记录 usage，测试会话全部归档。永久删除实际返回 ECAPABILITY 且保留会话，不计作删除成功。验收发现并修复用户绑定覆盖 CLI、新建 DTO 缺少 nullable updatedAt、SIGTERM 遗留原生写锁三个问题。
+
+节点处理 SIGINT 和 SIGTERM，先 fence 并回收所有托管 harness，再关闭文件与连接；DSH、Codex 和 Claude 共用这一关闭入口。已有外部 DSH 进程不归节点管理，不随节点停止。
 
 启动时（日志级别 info 或更详细）输出可复制的 MCP endpoint、serverId、认证方式、凭据来源及实际 API Key；旧 Basic 配置只显示用户名和密码来源。监听通配地址时另外尝试显示默认路由的本机 IP 候选；多网卡、容器、NAT 或代理场景仍需填写客户端实际可达地址。该探测不发送 UDP 数据包，也不发现公网地址。
 

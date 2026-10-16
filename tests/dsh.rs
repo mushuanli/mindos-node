@@ -79,6 +79,10 @@ async fn creates_resumes_streams_and_answers_approvals_using_native_receipts() {
     )
     .await;
     let id = created["result"]["session"]["id"].as_str().unwrap();
+    assert!(
+        created["result"]["session"].get("updatedAt").is_some(),
+        "Session DTO requires an explicit nullable updatedAt for independent clients"
+    );
     assert_eq!(
         mutate(
             &service,

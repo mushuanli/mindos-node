@@ -109,11 +109,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Stop admission, drain file work, then arm a hard exit deadline.
 async fn shutdown(state: Arc<State>) {
-    let _ = tokio::signal::ctrl_c().await;
+    let signal = shutdown_signal().await.unwrap_or("signal-error");
     emit(
         pi_agent::core::events::Level::Info,
         "server.stopping",
-        json!({}),
+        json!({"signal":signal}),
     );
     if let Some(sync) = &state.sync {
         sync.stop();
@@ -143,6 +143,14 @@ async fn shutdown(state: Arc<State>) {
         );
         std::process::exit(0);
     });
+}
+
+async fn shutdown_signal() -> std::io::Result<&'static str> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        result=tokio::signal::ctrl_c()=>{result?;Ok("SIGINT")},
+        _=terminate.recv()=>Ok("SIGTERM"),
+    }
 }
 
 async fn drain_sync(state: &State) {
