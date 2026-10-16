@@ -31,7 +31,14 @@ async fn main() -> std::process::ExitCode {
         Err(error) => {
             emit(
                 pi_agent::core::events::Level::Error,
-                "server.start_failed",
+                if std::env::args()
+                    .nth(1)
+                    .is_some_and(|arg| arg == "access" || arg == "sync")
+                {
+                    "cli.command_failed"
+                } else {
+                    "server.start_failed"
+                },
                 json!({"version": env!("CARGO_PKG_VERSION"), "error": error.to_string()}),
             );
             std::process::ExitCode::FAILURE
@@ -48,9 +55,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("pi-agent {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--help" || arg == "-h")
+    {
+        println!("{}", pi_agent::cli::HELP);
+        return Ok(());
+    }
     eprintln!("pi-agent {}", env!("CARGO_PKG_VERSION"));
+    if args.first().is_some_and(|arg| arg == "access") {
+        return pi_agent::cli::access(&args[1..]).map_err(Into::into);
+    }
     if args.first().is_some_and(|s| s == "sync") {
         return pi_agent::sync::admin(&args[1..]).map_err(Into::into);
+    }
+    if args.len() > 1 || args.first().is_some_and(|arg| arg.starts_with('-')) {
+        return Err("Invalid server arguments; use pi-agent --help".into());
     }
     let path = launch::resolve(args.first().map(String::as_str))?;
     let config = launch::load(&path)?;

@@ -1,6 +1,6 @@
 [package]
 name = "pi-agent"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "MindOS personal intelligence node for controlled files, projects, sync and AI harness sessions"
 repository = "https://github.com/mushuanli/pi-agent"
@@ -16,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 toml = "0.8"
+toml_edit = "0.22"
 rustix = { version = "1", features = ["fs", "process"] }
 futures-util = "0.3"
 hmac = "0.12"

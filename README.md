@@ -100,7 +100,9 @@ MindOS 项目右键菜单选择“启用远程命令”后，File Tools 和 Bash
 | 目录 | 职责 |
 | --- | --- |
 | `core/` | 与传输无关的基础件：错误词表与 errno 映射、标识符校验、文件/进程互斥门、阻塞工作池、分页游标 |
-| `config/` | 配置模型、凭据策略、导出策略、配置文件查找（纯输入与校验，不持有运行时状态） |
+| `cli/` | 本地管理参数解析、帮助与 JSON 输出，不复制授权规则 |
+| `admin/` | 目录授权配置用例、owner 迁移、私有备份与原子配置事务 |
+| `config/` | 配置模型、凭据策略、导出策略、配置文件查找与只读授权检查（不持有运行时状态） |
 | `app/` | 组合根：把配置装配成运行时状态（认证、导出、门、工作池、操作账本、执行准入） |
 | `auth.rs` | 身份解析与别名读写授权 |
 | `fs/` | 路径策略、目录能力（openat2）、revision、结构化修改、原子上传、启动恢复 |
@@ -299,6 +301,57 @@ The transcript scope includes inherited branch history and only the usage record
 
 能力发现返回当前 principal 与 grant revision。客户端可在所有文件/MCP 请求附带 `x-pi-agent-principal` 和 `x-pi-agent-grant-revision`；服务端发现身份或授权版本不匹配时，在操作前返回 AUTHORIZATION_CHANGED。项目描述返回有效权限，写权限降为只读后仍可读取原项目；旧服务端上限和客户端选择始终取交集。授权快照包含可见目录的物理身份及 profile home 范围，不能仅依赖显示名称作为缓存身份。
 
-ACL 当前通过配置修改并在重启后生效，不提供在线 ACL 管理接口。重启按原有流程停止和回收进程；客户端需重新发现能力并刷新受影响绑定，不将授权版本变化视为可重放写入。同步仍使用一个配置的 principal/namespace，仅对应身份可访问；多身份模式不会把单个 sync namespace 自动开放给所有目录用户。
+ACL 可通过下述本地管理 CLI 修改配置，重启后生效，不提供在线 ACL 管理接口。重启按原有流程停止和回收进程；客户端需重新发现能力并刷新受影响绑定，不将授权版本变化视为可重放写入。同步仍使用一个配置的 principal/namespace，仅对应身份可访问；多身份模式不会把单个 sync namespace 自动开放给所有目录用户。
 
 itookit 的 MCP 编辑器支持 Bearer、Basic 和显式匿名访问；各连接绑定自己的身份与权限快照。此模式支持不同 itookit 实例共享 pi-agent；同一个 MindOS httpd 当前仍是单用户运行时，客户端证书只是准入，不是多租户隔离。
+
+
+## 目录授权管理 CLI（0.3.2）
+
+目录本身不保存单独的密码。Bearer/Basic 验证用户身份，export 的 grants 决定该身份可以读、写或执行哪些目录。同一身份可访问多个目录，同一目录可向不同身份开放不同权限；`public` 独立开放匿名只读。配置中的 `access` 是共享目录的上限，`execute` 独立于读写权限。
+
+```bash
+pi-agent --help
+pi-agent access --help
+pi-agent access --config /srv/pi-agent/config.toml list
+pi-agent access --config /srv/pi-agent/config.toml validate
+
+# Existing single-user credentials become principal owner, retaining existing permissions.
+# Preview first; no configuration, lock or backup file is written by --dry-run.
+pi-agent access --config /srv/pi-agent/config.toml --dry-run init
+pi-agent access --config /srv/pi-agent/config.toml init
+
+# Provision a credential using the operator's existing environment or service EnvironmentFile.
+# Example token generation; keep the same value available to the restarted service.
+export PI_ALICE_TOKEN="$(openssl rand -hex 32)"
+pi-agent access --config /srv/pi-agent/config.toml principal add alice --token-env PI_ALICE_TOKEN
+pi-agent access --config /srv/pi-agent/config.toml grant alice project ro
+pi-agent access --config /srv/pi-agent/config.toml grant alice project rw --execute
+
+# A new share has no implicit authenticated grants. Paths must exist and cannot overlap exports.
+pi-agent access --config /srv/pi-agent/config.toml share add reference /srv/reference ro
+pi-agent access --config /srv/pi-agent/config.toml grant alice reference ro
+pi-agent access --config /srv/pi-agent/config.toml share set reference --public true
+pi-agent access --config /srv/pi-agent/config.toml check anonymous reference read
+pi-agent access --config /srv/pi-agent/config.toml check alice reference write
+
+# Remove explicit access; inherited public reads still apply until public is disabled.
+pi-agent access --config /srv/pi-agent/config.toml revoke alice reference
+pi-agent access --config /srv/pi-agent/config.toml share set reference --public false
+pi-agent access --config /srv/pi-agent/config.toml share remove reference
+
+# Rotate credentials without changing principal identity or its project/session ownership.
+pi-agent access --config /srv/pi-agent/config.toml principal credential alice --token-env PI_ALICE_NEW_TOKEN
+pi-agent access --config /srv/pi-agent/config.toml principal add bob --username bob --password-env PI_BOB_PASSWORD
+pi-agent access --config /srv/pi-agent/config.toml principal remove bob
+```
+
+`--config` 可放在命令参数前后；省略时沿用服务的 `config.toml` 查找规则。所有输出为 JSON，只有身份、凭据来源字段名和权限，不打印凭据值。拒绝的 `check` 会返回 `allowed: false` 并以非零状态退出；结果明确标记 `scope: configured-policy`、`runtimeVerified: false`，用于配置决策，不代表运行中进程已经应用修改。检查通过只证明认证、目录、原生 profile 等相关配置可被解析，不证明独占写锁、沙箱、模型登录或网络可运行。
+
+环境变量引用会使用当前 CLI 进程的环境进行校验；运行服务也必须能读取这些环境变量。命令不接受明文 token/password 参数，以免凭据落入 shell 历史或进程参数。目录权限按已登记的共享根继承，不能用该 CLI 给同一 export 的子目录覆盖权限；不同访问策略应使用互不重叠的 export。
+
+CLI 分为三层：`cli/` 解析参数和显示结果；`admin/` 编排本地管理、迁移与原子配置事务；`config/inspect` 复用 `config/authorization` 编译器。检查只读打开目录，不创建项目或同步库、不争抢运行中服务的 export 写锁，也不启动 harness。
+
+每次有效修改先完成完整的目录授权校验，再在配置同目录原子替换，并保留 `config.toml.backup-*.toml` 原始备份；新配置与备份权限均为 0600。合作式编辑锁和提交前的原文件核对拒绝并发覆盖；失败不替换原配置。`--dry-run` 只返回预览，不写文件。顶层注释与其他设置保留，inline 数组可能规范化为 TOML 表。共享移除只移除配置，不删除目录文件；被 grants、harness 或启用中的 sync 引用的身份，以及最后一个身份，不可直接删除。
+
+`access init` 保留稳定身份 `owner`、现有凭据、目录上限和执行权限，补齐项目模式原生 profile 的 `principal_id=owner`。原配置缺少稳定节点 ID 时生成并保存一个；已有 ID 不变。存在旧式、非项目模式 harness workspace 时拒绝迁移，需先显式整理其配置。修改完成返回 `restartRequired: true`；重启后客户端重新发现身份和 grant revision。CLI 不自动重启服务，也不修改项目、会话数据。

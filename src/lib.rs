@@ -22,8 +22,10 @@
 //! never the reverse, and [`core`] depends on nothing but the standard library
 //! and foundational crates.
 
+pub mod admin;
 pub mod app;
 pub mod auth;
+pub mod cli;
 pub mod config;
 pub mod core;
 pub mod fs;

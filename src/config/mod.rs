@@ -10,12 +10,14 @@
 //! Runtime wiring lives in [`crate::app`], so this module never needs a
 //! Tokio runtime, never holds a lock, and can be tested by value.
 
+pub(crate) mod identity;
+pub(crate) mod inspect;
 pub mod launch;
 pub mod model;
 
 pub(crate) mod authorization;
 mod credentials;
-mod exports;
+pub(crate) mod exports;
 
 pub use model::{Access, Config, ExportConfig};
 

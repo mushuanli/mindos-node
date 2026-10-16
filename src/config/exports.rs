@@ -5,15 +5,34 @@
 //! (different alias, different access mode, different lock). Equal paths are
 //! rejected by the same test, since a path starts with itself.
 
-use crate::config::model::{Access, ExportConfig};
+use crate::config::model::{Access, Config, ExportConfig};
 use crate::core::ids;
 use crate::fs::{Export, Exports};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
+
+pub(crate) fn validate_presence(config: &Config) -> Result<(), String> {
+    let optional = (config.sync.as_ref().is_some_and(|s| s.enabled)
+        || !config.harnesses.is_empty())
+        && !config.execution;
+    if config.exports.is_empty() && !optional {
+        return Err("no exports configured: add at least one [[exports]] section".into());
+    }
+    Ok(())
+}
 
 pub(crate) fn open_all(configs: &[ExportConfig]) -> Result<Exports, String> {
     if configs.is_empty() {
         return Err("no exports configured: add at least one [[exports]] section".to_owned());
     }
+    open_with(configs, true)
+}
+
+/// Inspect policy alongside a running service without acquiring its write locks.
+pub(crate) fn inspect_all(configs: &[ExportConfig]) -> Result<Exports, String> {
+    open_with(configs, false)
+}
+
+fn open_with(configs: &[ExportConfig], writable: bool) -> Result<Exports, String> {
     let mut by_alias = BTreeMap::new();
     let mut roots: Vec<(String, std::path::PathBuf)> = Vec::new();
     for (index, config) in configs.iter().enumerate() {
@@ -28,7 +47,11 @@ pub(crate) fn open_all(configs: &[ExportConfig]) -> Result<Exports, String> {
         let root = std::fs::canonicalize(&config.path)
             .map_err(|_| format!("exports[{index}]: path {:?} does not exist", config.path))?;
         reject_overlap(&roots, &root, &config.path, index)?;
-        let capability = open(config, index, &root)?;
+        let capability = if writable {
+            open(config, index, &root)?
+        } else {
+            Export::open(&root).map_err(|_| format!("exports[{index}]: directory unavailable"))?
+        };
         roots.push((alias.clone(), root));
         by_alias.insert(alias, Arc::new(capability));
     }
@@ -52,7 +75,7 @@ fn reject_overlap(
     ))
 }
 
-pub(super) fn alias(config: &ExportConfig, index: usize) -> Result<String, String> {
+pub(crate) fn alias(config: &ExportConfig, index: usize) -> Result<String, String> {
     let alias = match &config.alias {
         Some(alias) => alias.clone(),
         None => Path::new(&config.path)

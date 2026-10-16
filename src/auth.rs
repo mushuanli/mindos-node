@@ -1,7 +1,7 @@
 //! Authentication and authorization policy.
 //!
-//! The service has a single configured principal, but the checks are written
-//! per client so a second one can be added without touching the handlers:
+//! Principals and public read access compile into immutable client capabilities;
+//! handlers share these checks across all transports:
 //!
 //! * **Authentication** turns an `Authorization` header into an identity.
 //!   A password client uses HTTP Basic and never falls back to Bearer; a token

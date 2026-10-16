@@ -52,11 +52,13 @@ pub(crate) fn compile(
 
 fn legacy_client(config: &Config, roots: &Exports) -> Result<Client, String> {
     let c = credentials::resolve(config)?;
-    let writes = roots
+    let writes = config
+        .exports
         .iter()
-        .filter(|(_, e)| e.writable())
-        .map(|(id, _)| id.clone())
-        .collect();
+        .enumerate()
+        .filter(|(_, e)| e.access == Access::Rw)
+        .map(|(index, e)| exports::alias(e, index))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Client::new(
         c.secret,
         c.username,

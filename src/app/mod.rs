@@ -17,7 +17,7 @@
 use crate::{
     auth::Auth,
     config::{open_exports, Config},
-    core::{gate::FileGate, ids, workers::Workers},
+    core::{gate::FileGate, workers::Workers},
     fs::Exports,
     operations::Operations,
     process::Execution,
@@ -52,7 +52,7 @@ impl State {
         config: &Config,
         plugins: crate::harness::HarnessPlugins,
     ) -> Result<Arc<Self>, String> {
-        validate_identity(config)?;
+        crate::config::identity::validate_identity(config)?;
         let sync = open_sync(config)?;
         let projects = config
             .projects
@@ -137,10 +137,8 @@ fn open_sync(config: &Config) -> Result<Option<Arc<crate::sync::SyncService>>, S
         .map_err(|e| e.to_string())
 }
 fn configured_exports(config: &Config) -> Result<Exports, String> {
-    let pure_sync = (config.sync.as_ref().is_some_and(|s| s.enabled)
-        || !config.harnesses.is_empty())
-        && !config.execution;
-    if pure_sync && config.exports.is_empty() {
+    crate::config::exports::validate_presence(config)?;
+    if config.exports.is_empty() {
         Ok(Exports::new(std::collections::BTreeMap::new()))
     } else {
         open_exports(&config.exports)
@@ -155,24 +153,6 @@ fn configured_auth(config: &Config, exports: &Exports) -> Result<Auth, String> {
         None => None,
     };
     crate::config::authorization::compile(config, exports, server_id)
-}
-
-/// Reject configurations that cannot be served safely.
-fn validate_identity(config: &Config) -> Result<(), String> {
-    if config.projects.is_some() && config.server_id.is_none() {
-        return Err("Project management requires a stable server_id".into());
-    }
-    if let Some(id) = &config.server_id {
-        if !ids::is_identifier_within(id, ids::IDENTIFIER_MAX) {
-            return Err("server_id must contain 1..128 ASCII letters, digits, '-' or '_'".into());
-        }
-    }
-    // A username with a token would look like Basic authentication but silently
-    // serve Bearer only, so it is rejected instead of ignored.
-    if config.username.is_some() && (config.token.is_some() || config.token_env.is_some()) {
-        return Err("username cannot be combined with token or token_env".into());
-    }
-    Ok(())
 }
 
 fn random_bytes() -> Result<[u8; KEY_BYTES], String> {
