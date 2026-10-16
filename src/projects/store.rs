@@ -143,7 +143,7 @@ impl Store {
             .cloned()
             .collect())
     }
-    pub fn get(&self, identity: usize, id: &str) -> Result<Project, Error> {
+    pub fn get(&self, identity: &str, id: &str) -> Result<Project, Error> {
         if self.poisoned.load(std::sync::atomic::Ordering::Acquire) {
             return Err(Error::internal());
         }
@@ -179,7 +179,7 @@ impl Store {
         *image = next;
         Ok(project)
     }
-    pub fn remove(&self, identity: usize, id: &str, revision: u64) -> Result<(), Error> {
+    pub fn remove(&self, identity: &str, id: &str, revision: u64) -> Result<(), Error> {
         let mut image = self.image.lock().map_err(|_| Error::internal())?;
         if self.poisoned.load(std::sync::atomic::Ordering::Acquire) {
             return Err(Error::internal());

@@ -15,13 +15,26 @@ const MAX_TIMEOUT_MS: u64 = 30_000;
 
 /// Resolve the request identity.
 pub fn identity(state: &State, headers: &HeaderMap) -> Result<usize, Error> {
-    state.auth.identify(headers).inspect_err(|error| {
+    let identity = state.auth.identify(headers).inspect_err(|error| {
         crate::core::events::emit(
             crate::core::events::Level::Warn,
             "auth.rejected",
             serde_json::json!({"code": error.code}),
         );
-    })
+    })?;
+    let authorization = state.auth.client(identity).authorization();
+    for (header, field) in [
+        ("x-pi-agent-principal", "principalId"),
+        ("x-pi-agent-grant-revision", "revision"),
+    ] {
+        if headers
+            .get(header)
+            .is_some_and(|value| value.to_str().ok() != authorization[field].as_str())
+        {
+            return Err(Error::forbidden("AUTHORIZATION_CHANGED"));
+        }
+    }
+    Ok(identity)
 }
 
 /// Resolve the identity and prove it may read `alias`.
@@ -31,7 +44,10 @@ pub fn export(
     alias: &str,
 ) -> Result<(usize, Arc<Export>), Error> {
     let identity = identity(state, headers)?;
-    state.auth.authorize(identity, alias)?;
+    state.auth.authorize(identity, alias).inspect_err(|_| {
+        crate::core::events::emit(crate::core::events::Level::Warn,"authorization.rejected",
+            serde_json::json!({"principalId":state.auth.client(identity).id(),"operation":"files.read","alias":alias.chars().take(128).collect::<String>()}));
+    })?;
     let export = state
         .exports
         .get(alias)
@@ -48,6 +64,11 @@ pub fn writable_export(
 ) -> Result<(usize, Arc<Export>), Error> {
     let (identity, export) = export(state, headers, alias)?;
     if !state.auth.client(identity).may_write(alias) || !export.writable() {
+        crate::core::events::emit(
+            crate::core::events::Level::Warn,
+            "authorization.rejected",
+            serde_json::json!({"principalId":state.auth.client(identity).id(),"operation":"files.write","alias":alias}),
+        );
         return Err(Error::forbidden("EROFS"));
     }
     Ok((identity, export))

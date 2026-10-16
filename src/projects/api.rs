@@ -14,14 +14,20 @@ pub async fn call(
     let service = state.projects.as_ref().ok_or_else(Error::unsupported)?;
     match name {
         "project_roots" => Ok(
-            json!({"roots":state.auth.client(identity).exports().iter().map(|alias|json!({"alias":alias,"access":if state.auth.client(identity).may_write(alias){"rw"}else{"ro"}})).collect::<Vec<_>>(),"execution":state.execution.ready(),"backend":"bubblewrap"}),
+            json!({"roots":state.auth.client(identity).exports().iter().map(|alias|json!({"alias":alias,"access":if state.auth.client(identity).may_write(alias){"rw"}else{"ro"},"capabilities":{"fileRead":true,"fileWrite":state.auth.client(identity).may_write(alias),"run":state.auth.client(identity).may_execute(alias)}})).collect::<Vec<_>>(),"execution":state.execution.ready() && state.auth.client(identity).has_execution(),"authorization":state.auth.client(identity).authorization(),"backend":"bubblewrap"}),
         ),
-        "project_list" => Ok(json!({"projects":service.list(identity)?})),
-        "project_read" => Ok(json!({"project":service.get(identity,text(&args,"projectId")?)?})),
+        "project_list" => Ok(
+            json!({"projects":service.list(identity)?.iter().filter_map(|p| super::descriptor::project(state, identity, p).ok()).collect::<Vec<_>>()}),
+        ),
+        "project_read" => Ok(
+            json!({"project":super::descriptor::project(state,identity,&service.get(identity,text(&args,"projectId")?)?)?}),
+        ),
         "project_register" => {
             let _gate = state.files.exclusive()?;
             let input = serde_json::from_value(args).map_err(|_| Error::invalid())?;
-            Ok(json!({"project":service.register(state,identity,input)?}))
+            Ok(
+                json!({"project":super::descriptor::project(state,identity,&service.register(state,identity,input)?)?}),
+            )
         }
         "project_configure" => configure(state, identity, service, args).await,
         "project_remount" => remount(state, identity, service, args).await,
@@ -77,7 +83,7 @@ async fn remount(
         .lock()
         .map_err(|_| Error::internal())?
         .remove_project(id);
-    Ok(json!({"project": project}))
+    Ok(json!({"project":super::descriptor::project(state,identity,&project)?}))
 }
 
 async fn configure(
@@ -109,7 +115,7 @@ async fn configure(
         .lock()
         .map_err(|_| Error::internal())?
         .remove_project(id);
-    Ok(json!({"project":project}))
+    Ok(json!({"project":super::descriptor::project(state,identity,&project)?}))
 }
 
 fn execute(
@@ -120,6 +126,7 @@ fn execute(
 ) -> Result<Value, Error> {
     let project = service.get(identity, text(&args, "projectId")?)?;
     authorize(state, identity, &project)?;
+    let project = super::service::effective(state, identity, &project);
     if args["revision"].as_u64() != Some(project.revision) {
         return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
     }

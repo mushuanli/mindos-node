@@ -190,6 +190,8 @@ fn rejects_profiles_overlapping_exclusive_exports() {
         path: root.path().to_str().unwrap().into(),
         alias: Some("rw".into()),
         access: pi_agent::config::Access::Rw,
+        public: false,
+        grants: vec![],
     });
     assert!(pi_agent::harness::config::validate(&config).is_err());
     let mut duplicate: ProfileConfig = config.harnesses[0].clone();

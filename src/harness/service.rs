@@ -1,5 +1,6 @@
 use super::mutation_queue::MutationQueues;
 use super::{config::ProfileConfig, driver::HarnessDriver, HarnessPlugins};
+use crate::app::State;
 use crate::core::error::Error;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -67,6 +68,30 @@ impl Harnesses {
     pub fn profiles(&self) -> Value {
         json!({"epoch":self.epoch,"profiles":self.profiles.values().map(|p| p.driver.descriptor()).collect::<Vec<_>>()})
     }
+    pub async fn authorized_call(
+        &self,
+        state: &State,
+        identity: usize,
+        name: &str,
+        args: Value,
+    ) -> Result<Value, Error> {
+        let client = state.auth.try_client(identity)?;
+        if name == "harness_profiles" {
+            let mut result = self.profiles();
+            result["profiles"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|p| p["id"].as_str().is_some_and(|id| client.may_harness(id)));
+            return Ok(result);
+        }
+        if !client.legacy() {
+            return Err(Error::forbidden("PROJECT_CONTEXT_REQUIRED"));
+        }
+        if !client.may_harness(string(&args, "profileId")?) {
+            return Err(Error::forbidden("EACCES"));
+        }
+        self.call(name, args).await
+    }
     pub async fn call(&self, name: &str, args: Value) -> Result<Value, Error> {
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::unavailable());
@@ -95,6 +120,10 @@ impl Harnesses {
         name: &str,
         args: Value,
     ) -> Result<Value, Error> {
+        let client = state.auth.try_client(identity)?;
+        if !client.may_harness(string(&args, "profileId")?) {
+            return Err(Error::forbidden("EACCES"));
+        }
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::unavailable());
         }
@@ -104,6 +133,14 @@ impl Harnesses {
             .ok_or_else(Error::unsupported)?
             .get(identity, string(&args, "projectId")?)?;
         crate::projects::service::authorize(state, identity, &project)?;
+        project = crate::projects::service::effective(state, identity, &project);
+        if is_mutation(name)
+            && crate::projects::service::mounts(&project)
+                .iter()
+                .any(|m| !client.may_execute(&m.alias))
+        {
+            return Err(Error::forbidden("EACCES"));
+        }
         if args["revision"].as_u64() != Some(project.revision) {
             return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
         }

@@ -243,6 +243,9 @@ impl SyncService {
     pub fn diagnostics(&self) -> Value {
         self.metrics.value()
     }
+    pub fn principal_id(&self) -> &str {
+        &self.identity.principal_id
+    }
     pub fn capabilities(&self) -> Value {
         json!({"protocolVersion":1,"authorityId":self.identity.authority_id,"historyEpoch":self.epoch(),
             "namespaceId":self.identity.namespace_id,"filesManifest":true,"opaqueBundle":true,

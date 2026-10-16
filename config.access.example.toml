@@ -1,0 +1,60 @@
+# Each export is one non-overlapping directory share; access is the physical ceiling.
+listen = "127.0.0.1:8787"
+server_id = "shared-node"
+execution = true
+
+[[principals]]
+id = "alice"
+token_env = "PI_ALICE_TOKEN"
+
+[[principals]]
+id = "bob"
+token_env = "PI_BOB_TOKEN"
+
+[[exports]]
+alias = "knowledge"
+path = "/srv/knowledge"
+access = "rw"
+public = true
+
+[[exports.grants]]
+principal = "alice"
+access = "rw"
+
+[[exports.grants]]
+principal = "bob"
+access = "ro"
+
+[[exports]]
+alias = "project"
+path = "/srv/project"
+access = "rw"
+
+[[exports.grants]]
+principal = "alice"
+access = "rw"
+execute = true
+
+[[exports.grants]]
+principal = "bob"
+access = "ro"
+execute = true
+
+[projects]
+root = "/srv/pi-agent-private/projects"
+network = true
+
+# Each principal uses their own native home, outside all exported directories.
+[[harnesses]]
+id = "alice-codex"
+kind = "codex"
+principal_id = "alice"
+projects = true
+home = "/srv/pi-agent-private/alice/codex"
+
+[[harnesses]]
+id = "bob-codex"
+kind = "codex"
+principal_id = "bob"
+projects = true
+home = "/srv/pi-agent-private/bob/codex"

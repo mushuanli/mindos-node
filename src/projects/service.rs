@@ -16,6 +16,7 @@ pub struct ProjectService {
     pub(super) store: Store,
     pub launcher: Arc<dyn super::runtime::ProjectLauncher>,
     admission: Mutex<()>,
+    owners: Vec<String>,
 }
 impl ProjectService {
     pub fn open(config: &Config, deployment: &crate::config::Config) -> Result<Self, String> {
@@ -56,18 +57,26 @@ impl ProjectService {
                 network: config.network,
             }),
             admission: Mutex::new(()),
+            owners: crate::config::authorization::identity_ids(deployment),
         })
     }
     pub fn list(&self, identity: usize) -> Result<Vec<Project>, Error> {
+        let owner = self.owner(identity)?;
         Ok(self
             .store
             .all()?
             .into_iter()
-            .filter(|p| p.owner == identity)
+            .filter(|p| p.owner == owner)
             .collect())
     }
     pub fn get(&self, identity: usize, id: &str) -> Result<Project, Error> {
-        self.store.get(identity, id)
+        self.store.get(self.owner(identity)?, id)
+    }
+    fn owner(&self, identity: usize) -> Result<&str, Error> {
+        self.owners
+            .get(identity)
+            .map(String::as_str)
+            .ok_or_else(|| Error::forbidden("EACCES"))
     }
     pub fn register(
         &self,
@@ -75,6 +84,9 @@ impl ProjectService {
         identity: usize,
         mut input: Register,
     ) -> Result<Project, Error> {
+        if state.auth.client(identity).anonymous() {
+            return Err(Error::forbidden("EACCES"));
+        }
         let _serial = self.admission.lock().map_err(|_| Error::internal())?;
         input.path = normalize(&input.path)?;
         if let Some(project) = self
@@ -99,7 +111,7 @@ impl ProjectService {
             access: input.access,
             revision: 1,
             mounts: input.mounts,
-            owner: identity,
+            owner: state.auth.client(identity).id().into(),
             root_identity: String::new(),
             mount_identities: vec![],
         };
@@ -130,7 +142,7 @@ impl ProjectService {
         self.store.save(project, None)
     }
     pub fn forget(&self, identity: usize, id: &str, revision: u64) -> Result<(), Error> {
-        self.store.remove(identity, id, revision)
+        self.store.remove(self.owner(identity)?, id, revision)
     }
     pub fn configure(
         &self,
@@ -202,7 +214,20 @@ pub fn mounts(project: &Project) -> Vec<Mount> {
     mounts
 }
 pub fn authorize(state: &State, identity: usize, project: &Project) -> Result<(), Error> {
-    validate(state, identity, project, true)
+    validate(state, identity, &effective(state, identity, project), true)
+}
+pub fn effective(state: &State, identity: usize, project: &Project) -> Project {
+    let client = state.auth.client(identity);
+    let mut project = project.clone();
+    if !client.may_write(&project.alias) {
+        project.access = "ro".into();
+    }
+    for mount in &mut project.mounts {
+        if !client.may_write(&mount.alias) {
+            mount.access = "ro".into();
+        }
+    }
+    project
 }
 fn validate(
     state: &State,
@@ -210,7 +235,7 @@ fn validate(
     project: &Project,
     existing: bool,
 ) -> Result<(), Error> {
-    if project.owner != identity
+    if project.owner != state.auth.client(identity).id()
         || project.name.trim().is_empty()
         || project.name.len() > 256
         || project.mounts.len() > 31

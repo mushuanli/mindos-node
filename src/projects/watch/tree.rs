@@ -62,11 +62,11 @@ pub(super) fn verify(state: &State, project: &Project, roots: &[Root]) -> Result
         .projects
         .as_ref()
         .ok_or_else(Error::unsupported)?
-        .get(project.owner, &project.id)?;
+        .get(state.auth.index(&project.owner)?, &project.id)?;
     if current.revision != project.revision {
         return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
     }
-    service::authorize(state, project.owner, &current)?;
+    service::authorize(state, state.auth.index(&project.owner)?, &current)?;
     for root in roots {
         if identity(&root.export.open_dir(&root.path)?)? != root.identity {
             return Err(Error::conflict("PROJECT_DIRECTORY_CHANGED"));

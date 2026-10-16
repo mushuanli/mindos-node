@@ -29,7 +29,9 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 const MAX_JSON_BODY: usize = 512 * 1024;
 
 /// Headers a browser client may send; anything else fails the CORS preflight.
-const ALLOWED_HEADERS: [&str; 15] = [
+const ALLOWED_HEADERS: [&str; 17] = [
+    "x-pi-agent-principal",
+    "x-pi-agent-grant-revision",
     "x-fsagent-project",
     "x-fsagent-project-revision",
     "x-fsagent-project-readonly",

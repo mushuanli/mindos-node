@@ -29,6 +29,8 @@ pub struct Config {
     #[serde(alias = "api_key_env")]
     pub token_env: Option<String>,
     #[serde(default)]
+    pub principals: Vec<PrincipalConfig>,
+    #[serde(default)]
     pub exports: Vec<ExportConfig>,
     pub sync: Option<crate::sync::Config>,
     pub projects: Option<crate::projects::Config>,
@@ -48,6 +50,31 @@ pub struct ExportConfig {
     pub alias: Option<String>,
     #[serde(default)]
     pub access: Access,
+    #[serde(default)]
+    pub public: bool,
+    #[serde(default)]
+    pub grants: Vec<DirectoryGrant>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalConfig {
+    pub id: String,
+    pub token: Option<String>,
+    pub token_env: Option<String>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub password_env: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryGrant {
+    pub principal: String,
+    #[serde(default)]
+    pub access: Access,
+    #[serde(default)]
+    pub execute: bool,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Default)]

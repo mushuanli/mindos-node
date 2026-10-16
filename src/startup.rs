@@ -93,6 +93,13 @@ fn endpoint(address: SocketAddr) -> String {
 }
 
 fn authentication(config: &Config) -> String {
+    if !config.principals.is_empty() {
+        return format!(
+            "{} configured principals; anonymous read={}",
+            config.principals.len(),
+            config.exports.iter().any(|e| e.public)
+        );
+    }
     if config.password.is_some() || config.password_env.is_some() {
         let username = config
             .username

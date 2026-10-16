@@ -72,7 +72,7 @@ pub(crate) fn resolve(config: &Config) -> Result<Credentials, String> {
     Ok(Credentials { secret, username })
 }
 
-fn secret(
+pub(super) fn secret(
     field: &str,
     value: Option<&str>,
     environment: Option<&str>,

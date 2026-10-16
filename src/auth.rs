@@ -12,9 +12,17 @@
 use crate::core::error::Error;
 use axum::http::HeaderMap;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 /// One authenticated principal and the aliases it may reach.
 pub struct Client {
+    id: String,
+    anonymous: bool,
+    restricted: bool,
+    execution_exports: Vec<String>,
+    harnesses: Vec<String>,
+    revision: String,
     secret: String,
     username: Option<String>,
     exports: Vec<String>,
@@ -29,11 +37,81 @@ impl Client {
         write_exports: Vec<String>,
     ) -> Self {
         Self {
+            id: "owner".into(),
+            anonymous: false,
+            restricted: false,
+            execution_exports: exports.clone(),
+            harnesses: Vec::new(),
+            revision: String::new(),
             secret,
             username,
             exports,
             write_exports,
         }
+        .revised()
+    }
+
+    pub fn scoped(mut self, id: String, execution: Vec<String>, harnesses: Vec<String>) -> Self {
+        self.id = id;
+        self.restricted = true;
+        self.execution_exports = execution;
+        self.harnesses = harnesses;
+        self.revised()
+    }
+    pub fn public(exports: Vec<String>) -> Self {
+        let mut client = Self::new(String::new(), None, exports, vec![]).scoped(
+            "anonymous".into(),
+            vec![],
+            vec![],
+        );
+        client.anonymous = true;
+        client
+    }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn anonymous(&self) -> bool {
+        self.anonymous
+    }
+    pub fn legacy(&self) -> bool {
+        !self.restricted
+    }
+    pub fn may_execute(&self, alias: &str) -> bool {
+        !self.anonymous && self.execution_exports.iter().any(|a| a == alias)
+    }
+    pub fn may_harness(&self, profile: &str) -> bool {
+        !self.anonymous && (!self.restricted || self.harnesses.iter().any(|id| id == profile))
+    }
+    pub fn has_execution(&self) -> bool {
+        !self.execution_exports.is_empty()
+    }
+    pub fn has_harness(&self) -> bool {
+        !self.anonymous && (!self.restricted || !self.harnesses.is_empty())
+    }
+    pub fn authorization(&self) -> serde_json::Value {
+        serde_json::json!({"principalId": self.id, "anonymous": self.anonymous, "revision": self.revision})
+    }
+    pub(crate) fn bind_resources(&mut self, resources: &[String]) {
+        self.revision = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::json!([self.revision, resources])
+                    .to_string()
+                    .as_bytes()
+            )
+        );
+    }
+    fn revised(mut self) -> Self {
+        let policy = serde_json::json!([
+            self.id,
+            self.exports,
+            self.write_exports,
+            self.execution_exports,
+            self.harnesses,
+            self.restricted
+        ]);
+        self.revision = format!("{:x}", Sha256::digest(policy.to_string().as_bytes()));
+        self
     }
 
     /// Whether this client may read `alias`.
@@ -71,6 +149,9 @@ impl Client {
 
     /// Compare the presented header against this client without early exit.
     fn matches(&self, authorization: &str, basic: Option<(&str, &str)>) -> bool {
+        if self.anonymous {
+            return false;
+        }
         match (&self.username, basic) {
             (Some(username), Some((name, password))) => {
                 equal(username.as_bytes(), name.as_bytes())
@@ -90,11 +171,31 @@ impl Client {
 pub struct Auth {
     server_id: Option<String>,
     clients: Vec<Client>,
+    bearers: HashMap<[u8; 32], usize>,
+    basics: HashMap<String, usize>,
+    anonymous: Option<usize>,
 }
 
 impl Auth {
     pub fn new(server_id: Option<String>, clients: Vec<Client>) -> Self {
-        Self { server_id, clients }
+        let mut auth = Self {
+            server_id,
+            clients,
+            bearers: HashMap::new(),
+            basics: HashMap::new(),
+            anonymous: None,
+        };
+        for (index, client) in auth.clients.iter().enumerate() {
+            if client.anonymous {
+                auth.anonymous = Some(index);
+            } else if let Some(name) = &client.username {
+                auth.basics.insert(name.clone(), index);
+            } else {
+                auth.bearers
+                    .insert(Sha256::digest(client.secret.as_bytes()).into(), index);
+            }
+        }
+        auth
     }
 
     /// Stable installation identity, advertised through `/v1/capabilities`.
@@ -108,6 +209,9 @@ impl Auth {
 
     /// Resolve the request identity, or `EACCES`.
     pub fn identify(&self, headers: &HeaderMap) -> Result<usize, Error> {
+        if !headers.contains_key("authorization") {
+            return self.anonymous.ok_or_else(Error::unauthenticated);
+        }
         let authorization = headers
             .get("authorization")
             .and_then(|value| value.to_str().ok())
@@ -118,15 +222,36 @@ impl Auth {
             .and_then(|(_, value)| STANDARD.decode(value).ok())
             .and_then(|bytes| String::from_utf8(bytes).ok());
         let credentials = basic.as_deref().and_then(|value| value.split_once(':'));
-        self.clients
-            .iter()
-            .position(|client| client.matches(authorization, credentials))
+        let index = if let Some((name, _)) = credentials {
+            self.basics.get(name)
+        } else {
+            split_scheme(authorization)
+                .filter(|(s, _)| s.eq_ignore_ascii_case("bearer"))
+                .and_then(|(_, token)| {
+                    self.bearers
+                        .get(&<[u8; 32]>::from(Sha256::digest(token.as_bytes())))
+                })
+        };
+        index
+            .copied()
+            .filter(|index| self.clients[*index].matches(authorization, credentials))
             .ok_or_else(Error::unauthenticated)
     }
 
     /// The client behind an identity returned by [`Self::identify`].
     pub fn client(&self, identity: usize) -> &Client {
         &self.clients[identity]
+    }
+    pub fn try_client(&self, identity: usize) -> Result<&Client, Error> {
+        self.clients
+            .get(identity)
+            .ok_or_else(|| Error::forbidden("EACCES"))
+    }
+    pub fn index(&self, id: &str) -> Result<usize, Error> {
+        self.clients
+            .iter()
+            .position(|c| c.id == id)
+            .ok_or_else(|| Error::forbidden("EACCES"))
     }
 
     /// [`Self::identify`] followed by a read check on `alias`.
@@ -150,6 +275,27 @@ fn equal(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
+/// Only the legacy single-principal index has an unambiguous migration.
+pub(crate) fn deserialize_owner<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<String, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Owner {
+        Id(String),
+        Legacy(u64),
+    }
+    match <Owner as serde::Deserialize>::deserialize(d)? {
+        Owner::Id(id) if crate::core::ids::is_identifier_within(&id, 128) && id != "anonymous" => {
+            Ok(id)
+        }
+        Owner::Legacy(0) => Ok("owner".into()),
+        _ => Err(serde::de::Error::custom(
+            "Invalid persistent principal identity",
+        )),
+    }
 }
 
 #[cfg(test)]

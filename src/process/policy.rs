@@ -77,6 +77,7 @@ pub fn plan(state: &State, identity: usize, request: &Request) -> Result<Plan, E
             .ok_or_else(Error::unsupported)?
             .get(identity, id)?;
         crate::projects::service::authorize(state, identity, &project)?;
+        let project = crate::projects::service::effective(state, identity, &project);
         if request.project_revision != Some(project.revision) {
             return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
         }

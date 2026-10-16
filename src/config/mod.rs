@@ -13,10 +13,10 @@
 pub mod launch;
 pub mod model;
 
+pub(crate) mod authorization;
 mod credentials;
 mod exports;
 
 pub use model::{Access, Config, ExportConfig};
 
-pub(crate) use credentials::resolve as resolve_credentials;
 pub(crate) use exports::open_all as open_exports;

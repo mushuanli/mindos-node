@@ -15,8 +15,8 @@
 //! | [`Execution`] | process epoch, admission and the retained lock |
 
 use crate::{
-    auth::{Auth, Client},
-    config::{open_exports, resolve_credentials, Config},
+    auth::Auth,
+    config::{open_exports, Config},
     core::{gate::FileGate, ids, workers::Workers},
     fs::Exports,
     operations::Operations,
@@ -147,18 +147,6 @@ fn configured_exports(config: &Config) -> Result<Exports, String> {
     }
 }
 fn configured_auth(config: &Config, exports: &Exports) -> Result<Auth, String> {
-    let credentials = resolve_credentials(config)?;
-    let writable = exports
-        .iter()
-        .filter(|(_, e)| e.writable())
-        .map(|(alias, _)| alias.clone())
-        .collect();
-    let client = Client::new(
-        credentials.secret,
-        credentials.username,
-        exports.aliases().cloned().collect(),
-        writable,
-    );
     let server_id = match &config.server_id {
         Some(id) => Some(id.clone()),
         None if config.execution || !config.harnesses.is_empty() => {
@@ -166,7 +154,7 @@ fn configured_auth(config: &Config, exports: &Exports) -> Result<Auth, String> {
         }
         None => None,
     };
-    Ok(Auth::new(server_id, vec![client]))
+    crate::config::authorization::compile(config, exports, server_id)
 }
 
 /// Reject configurations that cannot be served safely.

@@ -23,6 +23,8 @@ pub async fn exports(
                 "access": if writable && client.may_write(alias) { "rw" } else { "ro" },
                 "nameSemantics": "source",
                 "strongRevision": writable,
+                "capabilities": {"fileRead":true,"fileWrite":writable && client.may_write(alias),"run":client.may_execute(alias)},
+                "authorization":client.authorization(),
             })
         })
         .collect::<Vec<_>>();

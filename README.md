@@ -272,3 +272,17 @@ Codex and Claude profiles advertise `capabilities.usage`. The read-only `harness
 The reader caches file identity and byte offset, processes at most 32 MiB per request, and reconstructs after restart. Partial/oversized records and counter resets mark incomplete results; entry capacity is bounded at 8192. Repeated Codex cumulative snapshots and Claude message frames do not accumulate twice. Failed/cancelled turns retain their recorded usage. Read errors set `usageUnavailable` on the session without blocking history. No prices, currency conversion, billing rules or ledger writes live here.
 
 The transcript scope includes inherited branch history and only the usage records present in the selected native transcript. It is not newly incurred branch spend or a provider bill, and must not be summed across branches as account billing. Consumers choose their own pricing policy and explicitly label estimates.
+
+## 目录共享与多身份授权（0.2）
+
+参考 [config.access.example.toml](config.access.example.toml)。`principals` 为每个用户声明稳定 `id` 和 Bearer 或 Basic 凭据；一个身份当前配置一个凭据，轮换凭据不改变身份。不要混用顶层旧凭据和 `principals`。多身份模式要求稳定 `server_id`。旧单用户配置继续有效，对应稳定身份 `owner`；旧 catalog 中的 owner=0 自动解释为 owner，其他数字身份拒绝迁移。切换到多身份时需要保留 `id="owner"` 才能继续访问原 owner 项目，不自动转交给配置中的第一个用户。
+
+每个 export 是一个目录共享单元，`access` 为服务器上限。`public=true` 允许匿名和已认证用户读取；`[[exports.grants]]` 按 principal 分配 ro/rw，`execute=true` 独立允许执行，缺省为 false。公开权限始终只读，显式非法凭据返回 401，不降级匿名。目录根继续禁止重叠；第一版统一继承共享根权限，不提供组、嵌套覆盖或公开目录内私密子目录例外。文件、SeqFile、项目挂载和进程均校验同一服务端授权，去掉项目 headers 不能扩大用户的 export 权限。
+
+匿名身份只提供文件读取，不能登记项目、执行命令、访问 sync 或原生历史。认证用户的项目绑定和会话是私有的，共享文件目录不共享聊天历史。原生 profile 必须显式绑定 `principal_id`、使用 `projects=true`，不能使用无项目上下文的旧 workspace 控制入口。不同身份的 harness home 必须互不重叠，且均在 exports 之外。只读目录可以显式授予 execute，以 ro 沙箱挂载运行自己的分析会话；rw 本身不授予执行权。模型账号、home 和审批不能扩大外层目录挂载。
+
+能力发现返回当前 principal 与 grant revision。客户端可在所有文件/MCP 请求附带 `x-pi-agent-principal` 和 `x-pi-agent-grant-revision`；服务端发现身份或授权版本不匹配时，在操作前返回 AUTHORIZATION_CHANGED。项目描述返回有效权限，写权限降为只读后仍可读取原项目；旧服务端上限和客户端选择始终取交集。授权快照包含可见目录的物理身份及 profile home 范围，不能仅依赖显示名称作为缓存身份。
+
+ACL 当前通过配置修改并在重启后生效，不提供在线 ACL 管理接口。重启按原有流程停止和回收进程；客户端需重新发现能力并刷新受影响绑定，不将授权版本变化视为可重放写入。同步仍使用一个配置的 principal/namespace，仅对应身份可访问；多身份模式不会把单个 sync namespace 自动开放给所有目录用户。
+
+itookit 的 MCP 编辑器支持 Bearer、Basic 和显式匿名访问；各连接绑定自己的身份与权限快照。此模式支持不同 itookit 实例共享 pi-agent；同一个 MindOS httpd 当前仍是单用户运行时，客户端证书只是准入，不是多租户隔离。

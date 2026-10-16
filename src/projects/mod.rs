@@ -1,6 +1,7 @@
 //! Project catalog and authorization shared by files, processes and harnesses.
 mod activity;
 mod api;
+mod descriptor;
 mod directory_sync;
 pub mod model;
 pub mod runtime;

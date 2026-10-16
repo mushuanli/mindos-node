@@ -13,22 +13,23 @@ pub async fn capabilities(
     headers: HeaderMap,
 ) -> Result<Json<Value>, Error> {
     let client = state.auth.client(access::identity(&state, &headers)?);
-    let execution = state.execution.ready();
+    let execution = state.execution.ready() && client.has_execution();
     Ok(Json(json!({
         "processEpoch": state.execution.epoch(),
         "version": 1,
         "serverId": state.auth.server_id(),
+        "authorization": client.authorization(),
         "files": {
             "read": !client.exports().is_empty(),
             "write": client.can_write(),
             "seq": { "version": 1, "sqlite": true, "transactionScope": "file" },
         },
-        "sync": { "push": state.sync.as_ref().is_some_and(|s|s.healthy()),
+        "sync": { "push": state.sync.as_ref().is_some_and(|s|s.healthy() && (client.legacy() || s.principal_id() == client.id())),
             "protocolVersion": if state.sync.is_some() {Some(1)} else {None},
             "discovery": if state.sync.is_some() {Some("/v1/sync/capabilities")} else {None} },
         "process": { "exec": execution },
         "terminal": { "pty": false },
-        "harness": { "enabled": state.harness.enabled(), "protocolVersion": "2026-07-28", "endpoint": "/mcp" },
+        "harness": { "enabled": state.harness.enabled() && client.has_harness(), "protocolVersion": "2026-07-28", "endpoint": "/mcp" },
         "executionModel": if execution { "sandbox" } else { "none" },
         "workspaceConsistency": if execution { "isolated" } else { "none" },
         "readOnlyEnforcement": if execution { "kernel-enforced" } else { "none" },

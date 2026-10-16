@@ -31,6 +31,13 @@ fn start_authorized(
     identity: usize,
     request: Request,
 ) -> Result<Status, Error> {
+    if request
+        .mounts
+        .iter()
+        .any(|m| !state.auth.client(identity).may_execute(&m.alias))
+    {
+        return Err(Error::forbidden("EACCES"));
+    }
     authorize(state, &request.epoch, &request.request_id)?;
     if state.auth.server_id() != Some(request.server_id.as_str()) {
         return Err(Error::conflict("SERVER_ID_CHANGED"));

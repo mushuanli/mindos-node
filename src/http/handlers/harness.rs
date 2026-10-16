@@ -44,7 +44,7 @@ pub async fn mcp(
         "server/discover" => {
             json!({"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":[VERSION],"capabilities":{"tools":{}},
             "_meta":{"io.modelcontextprotocol/serverInfo":{"name":"pi-agent","version":env!("CARGO_PKG_VERSION")},
-                "itookit/pi-agent":capabilities(&state)}})
+                "itookit/pi-agent":capabilities(&state, identity)}})
         }
         "ping" => json!({"resultType":"complete"}),
         "tools/list" => {
@@ -143,7 +143,7 @@ async fn call(state: &Arc<State>, identity: usize, params: &Value) -> Value {
         .cloned()
         .unwrap_or_else(|| json!({}));
     let result = if name == "piagent_capabilities" || name == "fsagent_capabilities" {
-        Ok(capabilities(state))
+        Ok(capabilities(state, identity))
     } else if name.starts_with("project_") {
         crate::projects::call(state, identity, name, args).await
     } else if args.get("projectId").is_some() {
@@ -152,7 +152,10 @@ async fn call(state: &Arc<State>, identity: usize, params: &Value) -> Value {
             .project_call(state, identity, name, args)
             .await
     } else {
-        state.harness.call(name, args).await
+        state
+            .harness
+            .authorized_call(state, identity, name, args)
+            .await
     };
     let (value, error) = match result {
         Ok(value) => (value, false),
@@ -165,11 +168,13 @@ async fn call(state: &Arc<State>, identity: usize, params: &Value) -> Value {
         "content":[{"type":"text","text":value.to_string()}]})
 }
 
-fn capabilities(state: &State) -> Value {
+fn capabilities(state: &State, identity: usize) -> Value {
+    let client = state.auth.client(identity);
     json!({"version":1,"httpEndpoint":"./","serverId":state.auth.server_id(),
-        "fileProtocol":"fs-agent-http-v1","harness":state.harness.enabled(),
-        "projects":state.projects.is_some(),"sync":state.sync.is_some(),
-        "directorySync":state.projects.is_some() && state.sync.is_some(),
+        "authorization":client.authorization(),
+        "fileProtocol":"fs-agent-http-v1","harness":state.harness.enabled() && client.has_harness(),
+        "projects":state.projects.is_some() && !client.anonymous(),"sync":state.sync.as_ref().is_some_and(|s|client.legacy() || s.principal_id() == client.id()),
+        "directorySync":state.projects.is_some() && state.sync.as_ref().is_some_and(|s|client.legacy() || s.principal_id() == client.id()),
         "fileWatch":state.projects.is_some(),"fileSearch":state.projects.is_some() && state.execution.ready() && std::path::Path::new("/usr/bin/rg").is_file(),"directorySyncVersion":2,"projectProtocol":"fs-agent-project-v1"})
 }
 

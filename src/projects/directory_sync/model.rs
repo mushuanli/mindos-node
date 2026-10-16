@@ -56,7 +56,8 @@ pub struct Plan {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
     pub id: String,
-    pub owner: usize,
+    #[serde(deserialize_with = "crate::auth::deserialize_owner")]
+    pub owner: String,
     pub project_id: String,
     pub revision: u64,
     pub sync_project_id: String,
@@ -173,7 +174,7 @@ impl Binding {
     ) -> Result<Self, crate::core::error::Error> {
         Ok(Self {
             id: input.binding_id.clone(),
-            owner: project.owner,
+            owner: project.owner.clone(),
             project_id: project.id.clone(),
             revision: project.revision,
             sync_project_id: input.sync_project_id,

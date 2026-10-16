@@ -20,7 +20,12 @@ pub async fn call(
     name: &str,
     args: Value,
 ) -> Result<Value, Error> {
-    if identity != 0 {
+    let client = state.auth.try_client(identity)?;
+    if !state
+        .sync
+        .as_ref()
+        .is_some_and(|s| client.legacy() || s.principal_id() == client.id())
+    {
         return Err(Error::forbidden("EACCES"));
     }
     let activity = state
@@ -55,7 +60,7 @@ fn dispatch(state: &State, identity: usize, name: &str, args: Value) -> Result<V
     let mut binding = catalog(state)?
         .bindings()?
         .into_iter()
-        .find(|b| b.id == id && b.owner == identity)
+        .find(|b| b.id == id && b.owner == state.auth.client(identity).id())
         .ok_or_else(|| Error::not_found("BINDING_UNKNOWN"))?;
     if name == "project_sync_status" {
         return Ok(json!({"binding":binding}));

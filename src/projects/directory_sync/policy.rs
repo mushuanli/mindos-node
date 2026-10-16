@@ -17,6 +17,7 @@ pub(super) fn project(
         .ok_or_else(Error::unsupported)?
         .get(identity, id)?;
     service::authorize(state, identity, &project)?;
+    let project = service::effective(state, identity, &project);
     if project.revision != revision {
         return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
     }
@@ -29,7 +30,8 @@ pub(super) fn authorize<'a>(
     state: &'a State,
     binding: &Binding,
 ) -> Result<(Project, &'a Export), Error> {
-    let project = project(state, binding.owner, &binding.project_id, binding.revision)?;
+    let identity = state.auth.index(&binding.owner)?;
+    let project = project(state, identity, &binding.project_id, binding.revision)?;
     if project.alias != binding.alias
         || files::join(&project.path, &binding.target) != binding.source
     {

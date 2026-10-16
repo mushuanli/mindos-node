@@ -14,6 +14,7 @@ pub struct ProfileConfig {
     #[serde(default = "codex")]
     pub command: String,
     pub home: PathBuf,
+    pub principal_id: Option<String>,
     #[serde(default)]
     pub projects: bool,
     #[serde(default)]

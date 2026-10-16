@@ -136,7 +136,12 @@ fn authorized(state: &State, headers: &HeaderMap, path: &str) -> Result<Arc<Sync
         .auth
         .identify(headers)
         .map_err(|e| Error::new(e.code, e.status.as_u16()))?;
-    if identity != 0 {
+    if !state.auth.client(identity).legacy()
+        && !state
+            .sync
+            .as_ref()
+            .is_some_and(|s| s.principal_id() == state.auth.client(identity).id())
+    {
         return Err(Error::new("FORBIDDEN", 403));
     }
     let service = state

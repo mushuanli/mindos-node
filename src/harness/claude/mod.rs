@@ -369,13 +369,6 @@ impl Claude {
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::unavailable());
         }
-        if self
-            .runtime
-            .as_ref()
-            .is_some_and(|r| r.project.access != "rw")
-        {
-            return Err(Error::forbidden("EROFS"));
-        }
         match name {
             "harness_create" => self.create(args).await,
             "harness_resume" => {

@@ -20,7 +20,8 @@ pub struct Project {
     pub access: String,
     pub revision: u64,
     pub mounts: Vec<Mount>,
-    pub owner: usize,
+    #[serde(deserialize_with = "crate::auth::deserialize_owner")]
+    pub owner: String,
     pub root_identity: String,
     pub mount_identities: Vec<String>,
 }

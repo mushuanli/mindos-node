@@ -52,7 +52,7 @@ fn reject_overlap(
     ))
 }
 
-fn alias(config: &ExportConfig, index: usize) -> Result<String, String> {
+pub(super) fn alias(config: &ExportConfig, index: usize) -> Result<String, String> {
     let alias = match &config.alias {
         Some(alias) => alias.clone(),
         None => Path::new(&config.path)

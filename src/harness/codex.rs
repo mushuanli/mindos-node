@@ -277,13 +277,6 @@ impl Codex {
 
 impl Codex {
     async fn manage(&self, bridge: &Bridge, name: &str, args: &Value) -> Result<Value, Error> {
-        if self
-            .runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.project.access != "rw")
-        {
-            return Err(Error::forbidden("EROFS"));
-        }
         let id = string(args, "sessionId")?;
         let thread = self.summary(bridge, id).await?;
         if name == "harness_delete" {
@@ -466,13 +459,6 @@ impl Codex {
         .await
     }
     fn fork_cwd(&self, thread: &Value) -> Result<String, Error> {
-        if self
-            .runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.project.access != "rw")
-        {
-            return Err(Error::forbidden("EROFS"));
-        }
         let cwd = string(thread, "cwd")?;
         if !self.authorized(cwd) {
             return Err(Error::forbidden("EACCES"));
