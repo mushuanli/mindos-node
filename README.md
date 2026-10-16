@@ -258,3 +258,11 @@ python3 tests/real_claude.py
 最多 16 个观察，空闲 60 秒后在后续请求清理；客户端关闭发送 unwatch，授权变更/项目移除释放相应观察。建立监听最多 2048 个目录、50000 项及 2 秒，覆盖不足返回 truncated；driver 每 30 秒推进一次部分覆盖版本以补充刷新。旧服务器没有 fileWatch 时不调用新工具。观察按 owner/project/revision 及根目录身份核验，授权失效立即停止读取；没有原生会话的项目仍观察目录。目录变更不表示外部会话正在运行，也不授予执行控制。
 
 Codex/Claude 子进程只继承允许列表内的环境；代理保留 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 及各自小写形式，证书保留 `SSL_CERT_FILE/SSL_CERT_DIR`。大小写同时存在时原样传入，由原生客户端决定优先级。不把代理凭据写入日志，不自动覆盖全局代理设置。
+
+## Native usage snapshots
+
+Codex and Claude profiles advertise `capabilities.usage`. The read-only `harness_session_usage` tool returns `{sessionId, scope: "transcript", source: "native-history", revision, complete, observedAt, totals, entries}`. Session history and inspection also include this snapshot as `session.usage`, so viewers need no additional usage poll. Each entry contains its native turn/model/provider identity and disjoint input, cache-read, cache-write and output token buckets. Reasoning tokens are informational and already included in output.
+
+The reader caches file identity and byte offset, processes at most 32 MiB per request, and reconstructs after restart. Partial/oversized records and counter resets mark incomplete results; entry capacity is bounded at 8192. Repeated Codex cumulative snapshots and Claude message frames do not accumulate twice. Failed/cancelled turns retain their recorded usage. Read errors set `usageUnavailable` on the session without blocking history. No prices, currency conversion, billing rules or ledger writes live here.
+
+The transcript scope includes inherited branch history and only the usage records present in the selected native transcript. It is not newly incurred branch spend or a provider bill, and must not be summed across branches as account billing. Consumers choose their own pricing policy and explicitly label estimates.

@@ -387,7 +387,7 @@ fn page(
         json!({"session":entry.session,"turns":turns,"nextCursor":if earliest>0{json!(earliest.to_string())}else{Value::Null}}),
     )
 }
-fn authorize_record(
+pub(super) fn authorize_record(
     config: &ProfileConfig,
     runtime: Option<&ProjectRuntime>,
     entry: &Entry,
@@ -403,6 +403,13 @@ fn authorize_record(
         return Err(Error::forbidden("CLAUDE_SESSION_MISMATCH"));
     }
     Ok(())
+}
+pub(super) fn usage_file(config: &ProfileConfig, entry: &Entry) -> Result<File, Error> {
+    let (file, _) = Export::open(&config.home)?.read(&entry.path)?;
+    if identity(&file)? != entry.identity {
+        return Err(Error::conflict("CLAUDE_HISTORY_REPLACED"));
+    }
+    Ok(file)
 }
 fn is_user(record: &Value) -> bool {
     record["type"] == "user"

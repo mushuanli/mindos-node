@@ -14,6 +14,7 @@ mod plugins;
 mod presentation;
 mod search;
 mod service;
+mod usage;
 pub use driver::HarnessDriver;
 pub use plugins::{HarnessPlugin, HarnessPlugins};
 pub use service::Harnesses;

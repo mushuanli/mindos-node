@@ -30,6 +30,7 @@ pub struct Claude {
     sessions: AsyncMutex<BTreeMap<String, Arc<process::Process>>>,
     events: Arc<Mutex<Events>>,
     closed: AtomicBool,
+    usage: Arc<super::usage::Reader>,
 }
 impl Claude {
     pub fn new(mut config: ProfileConfig, runtime: Option<Arc<ProjectRuntime>>) -> Self {
@@ -47,6 +48,7 @@ impl Claude {
             sessions: AsyncMutex::new(BTreeMap::new()),
             events: Arc::new(Mutex::new(events)),
             closed: AtomicBool::new(false),
+            usage: Arc::default(),
         }
     }
     async fn catalog(&self) -> Result<history::Catalog, Error> {
@@ -105,7 +107,7 @@ impl Claude {
     }
     async fn read_history(&self, args: &Value) -> Result<Value, Error> {
         let id = string(args, "sessionId")?;
-        let session = self.session(id).await?;
+        let mut session = self.session(id).await?;
         let entry = self
             .catalog()
             .await?
@@ -118,6 +120,9 @@ impl Claude {
             let items = self.live_items(id).await;
             json!({"session":session,"turns":[{"id":null,"items":items}],"nextCursor":null})
         };
+        if !args["cursor"].is_string() {
+            super::usage::attach(&mut session, self.usage(args).await);
+        }
         result["session"] = session;
         Ok(result)
     }
@@ -130,6 +135,36 @@ impl Claude {
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             history::read(&config, runtime.as_deref(), &entry, &args)
+        })
+        .await
+        .map_err(|_| Error::internal())?
+    }
+    async fn usage(&self, args: &Value) -> Result<Value, Error> {
+        let id = string(args, "sessionId")?.to_owned();
+        self.session(&id).await?;
+        let entry = self
+            .catalog()
+            .await?
+            .entries
+            .into_iter()
+            .find(|e| e.session["id"] == id)
+            .ok_or_else(|| Error::not_found("ENOENT"))?;
+        let (config, runtime, reader) = (
+            self.config.clone(),
+            self.runtime.clone(),
+            self.usage.clone(),
+        );
+        let usage_permit = super::usage::permit()?;
+        let permit = READS
+            .try_acquire()
+            .map_err(|_| Error::too_many("CLAUDE_HISTORY_BUSY"))?;
+        tokio::task::spawn_blocking(move || {
+            let _usage_permit = usage_permit;
+            let _permit = permit;
+            let file = history::usage_file(&config, &entry)?;
+            reader.read(file, &id, super::usage::Kind::Claude, |record| {
+                history::authorize_record(&config, runtime.as_deref(), &entry, record)
+            })
         })
         .await
         .map_err(|_| Error::internal())?
@@ -325,8 +360,11 @@ impl Claude {
         match name {
             "harness_sessions" => self.list(args).await,
             "harness_session_read" => self.read_history(args).await,
+            "harness_session_usage" => self.usage(args).await,
             "harness_session_info" => {
-                Ok(json!({"session":self.session(string(args,"sessionId")?).await?}))
+                let mut session = self.session(string(args, "sessionId")?).await?;
+                super::usage::attach(&mut session, self.usage(args).await);
+                Ok(json!({"session":session}))
             }
             "harness_events" => Ok(self.events.lock().unwrap().page(
                 args["eventEpoch"].as_str(),
@@ -370,7 +408,7 @@ impl Claude {
 impl HarnessDriver for Claude {
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":"claude","workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),"projectRuntime":self.config.projects,
-        "capabilities":{"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
+        "capabilities":{"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {

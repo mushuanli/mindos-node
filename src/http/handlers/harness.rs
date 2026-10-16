@@ -311,6 +311,7 @@ fn tools() -> Vec<Value> {
             "Read session metadata without loading history or resuming execution",
             vec!["profileId", "sessionId"],
         ),
+        ("harness_session_usage", "Read native transcript token usage without execution or pricing", vec!["profileId", "sessionId"]),
         ("harness_session_search", "Search all authorized native session titles or parsed displayed history with explicit capacity limits", vec!["profileId", "query", "mode"]),
         ("harness_rename", "Rename an authorized native session without adopting execution", vec!["profileId", "epoch", "requestId", "sessionId", "name"]),
         ("harness_archive", "Archive an idle session owned by this gateway; preserves native history", vec!["profileId", "epoch", "requestId", "sessionId"]),
@@ -446,7 +447,7 @@ fn tool(name: &str, description: &str, required: Vec<&str>) -> Value {
     properties.insert("watchId".into(), json!({"type":"string","maxLength":128}));
     properties.insert("attachments".into(), json!({"type":"array","maxItems":5,"items":{"type":"object","required":["kind","name","content"],"properties":{"kind":{"enum":["text","image"]},"name":{"type":"string","maxLength":256},"content":{"type":"string","maxLength":524288},"mimeType":{"type":"string"}},"additionalProperties":false}}));
     json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required},
-        "annotations":{"readOnlyHint":matches!(name,"harness_session_search"|"project_watch"|"project_unwatch"|"project_search"|"project_sync_directories"|"project_sync_compare"|"project_sync_status"|"piagent_capabilities"|"fsagent_capabilities"|"project_roots"|"project_list"|"project_read"|"harness_profiles"|"harness_sessions"|"harness_session_read"|"harness_session_info"|"harness_events"|"harness_operation"),
+        "annotations":{"readOnlyHint":matches!(name,"harness_session_usage"|"harness_session_search"|"project_watch"|"project_unwatch"|"project_search"|"project_sync_directories"|"project_sync_compare"|"project_sync_status"|"piagent_capabilities"|"fsagent_capabilities"|"project_roots"|"project_list"|"project_read"|"harness_profiles"|"harness_sessions"|"harness_session_read"|"harness_session_info"|"harness_events"|"harness_operation"),
         "openWorldHint":true}})
 }
 

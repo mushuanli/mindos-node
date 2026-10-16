@@ -31,7 +31,7 @@ fn relative_log<'a>(home: &Path, path: &'a str) -> Result<&'a str, Error> {
     }
     Ok(relative)
 }
-fn open_log(home: &Path, path: &str) -> Result<std::fs::File, Error> {
+pub(super) fn open_log(home: &Path, path: &str) -> Result<std::fs::File, Error> {
     let relative = relative_log(home, path)?;
     // Directory capabilities reject symlinks and traversal even if native metadata is stale.
     let export = Export::open(home)?;

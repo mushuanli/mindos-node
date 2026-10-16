@@ -36,6 +36,7 @@ pub struct Codex {
     bridge: Mutex<Option<Arc<Bridge>>>,
     pub(super) owned: Mutex<HashSet<String>>,
     closed: AtomicBool,
+    usage: Arc<super::usage::Reader>,
 }
 impl Codex {
     pub fn new(config: ProfileConfig) -> Self {
@@ -45,6 +46,7 @@ impl Codex {
             bridge: Mutex::new(None),
             owned: Mutex::new(HashSet::new()),
             closed: AtomicBool::new(false),
+            usage: Arc::default(),
         }
     }
     pub fn project(
@@ -80,9 +82,12 @@ impl Codex {
             "harness_session_search" => super::search::search(self, &bridge, &args).await,
             "harness_sessions" => self.sessions(&bridge, &args).await,
             "harness_session_read" => self.history(&bridge, &args).await,
+            "harness_session_usage" => self.usage(&bridge, &args).await,
             "harness_session_info" => {
                 let thread = self.summary(&bridge, string(&args, "sessionId")?).await?;
-                Ok(json!({"session":self.session(&thread)}))
+                let mut session = self.session(&thread);
+                super::usage::attach(&mut session, self.thread_usage(&thread).await);
+                Ok(json!({"session":session}))
             }
             "harness_events" => {
                 let after = args["after"].as_u64().unwrap_or(0);
@@ -367,9 +372,11 @@ impl Codex {
             }
         }
         thread["turns"] = page["turns"].clone();
-        Ok(
-            json!({"session":self.session(&thread),"turns":page["turns"],"nextCursor":page["nextCursor"]}),
-        )
+        let mut session = self.session(&thread);
+        if !args["cursor"].is_string() {
+            super::usage::attach(&mut session, self.thread_usage(&thread).await);
+        }
+        Ok(json!({"session":session,"turns":page["turns"],"nextCursor":page["nextCursor"]}))
     }
     async fn page(&self, bridge: &Bridge, thread: &Value, args: &Value) -> Result<Value, Error> {
         if args["toolDetail"] == "summary" && thread["path"].is_string() {
@@ -383,6 +390,37 @@ impl Codex {
             return self.rollout(thread, args).await;
         }
         self.native_page(bridge, thread, args).await
+    }
+    async fn usage(&self, bridge: &Bridge, args: &Value) -> Result<Value, Error> {
+        let id = string(args, "sessionId")?.to_owned();
+        let thread = self.summary(bridge, &id).await?;
+        self.thread_usage(&thread).await
+    }
+    async fn thread_usage(&self, thread: &Value) -> Result<Value, Error> {
+        let id = string(thread, "id")?.to_owned();
+        let home = self.config.home.clone();
+        let path = self.history_path(thread)?;
+        let reader = self.usage.clone();
+        let permit = super::usage::permit()?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let file = super::history::open_log(&home, &path)?;
+            reader.read(file, &id, super::usage::Kind::Codex, |_| Ok(()))
+        })
+        .await
+        .map_err(|_| Error::internal())?
+    }
+    fn history_path(&self, thread: &Value) -> Result<String, Error> {
+        let path = string(thread, "path")?;
+        Ok(if self.runtime.is_some() {
+            self.config
+                .home
+                .join(path.strip_prefix("/harness/").unwrap_or(path))
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            path.to_owned()
+        })
     }
     async fn native_page(
         &self,
@@ -408,16 +446,7 @@ impl Codex {
         )
     }
     async fn rollout(&self, thread: &Value, args: &Value) -> Result<Value, Error> {
-        let path = string(thread, "path")?;
-        let translated = if self.runtime.is_some() {
-            self.config
-                .home
-                .join(path.strip_prefix("/harness/").unwrap_or(path))
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            path.to_owned()
-        };
+        let translated = self.history_path(thread)?;
         let cursor = args
             .get("cursor")
             .filter(|value| !value.is_null())
@@ -513,7 +542,7 @@ impl HarnessDriver for Codex {
         json!({"id":self.config.id,"kind":self.config.kind,
             "workspaces":self.config.workspaces.iter().map(|w| json!({"id":w.id})).collect::<Vec<_>>(),
             "projectRuntime":self.config.projects,
-            "capabilities":{"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"fork":true,"search":true,"rename":true,"archive":true,"unarchive":true,"delete":true,"attachments":["text","image"]}})
+            "capabilities":{"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"fork":true,"search":true,"rename":true,"archive":true,"unarchive":true,"delete":true,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move { self.read(name, args).await })
