@@ -297,11 +297,7 @@ async fn cleanup(
     let _ = child.kill().await;
     let clean = child.wait().await.is_ok();
     if let Some(runtime) = runtime {
-        if clean {
-            runtime.finish(&context.id);
-        } else if context.session.lock().unwrap()["activeTurnId"].is_string() {
-            runtime.stopped(false);
-        }
+        runtime.stopped_thread(&context.id, clean);
     }
     stop.cancel();
     for (_, reply) in context.pending.drain() {

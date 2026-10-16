@@ -231,11 +231,16 @@ async fn replacement_does_not_silently_retarget_projects_and_launcher_contains_o
     assert!(args.contains(&fixture.to_string_lossy().into_owned()));
     assert!(!args.contains(&root.path().to_string_lossy().into_owned()));
     assert!(!args.contains(&"--share-net".into()));
-    runtime.begin("thread").unwrap();
+    runtime.begin("thread", "operation").unwrap();
+    runtime.bind_turn("thread", "operation", "turn");
     assert!(state.files.shared().is_err());
-    runtime.event(&json!({"method":"turn/completed","params":{"threadId":"other"}}));
+    runtime.event(
+        &json!({"method":"turn/completed","params":{"threadId":"other","turn":{"id":"turn"}}}),
+    );
     assert!(state.files.shared().is_err());
-    runtime.event(&json!({"method":"turn/completed","params":{"threadId":"thread"}}));
+    runtime.event(
+        &json!({"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"turn"}}}),
+    );
     assert!(state.files.shared().is_ok());
     drop(prepared);
     std::fs::rename(

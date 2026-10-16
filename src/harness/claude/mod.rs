@@ -251,9 +251,14 @@ impl Claude {
         let content = inputs(&input)?;
         let turn = uuid()?;
         if let Some(runtime) = &self.runtime {
-            runtime.begin(id)?;
+            runtime.begin(id, &turn)?;
+            runtime.bind_turn(id, &turn, &turn);
         }
-        process.turn(&turn, content).await
+        let result = process.turn(&turn, content).await;
+        if let (Err(error), Some(runtime)) = (&result, &self.runtime) {
+            runtime.submission_failed(id, &turn, error);
+        }
+        result
     }
     async fn respond(&self, args: &Value) -> Result<Value, Error> {
         let request_id = args["nativeRequestId"]

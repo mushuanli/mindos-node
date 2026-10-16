@@ -70,6 +70,11 @@ for line in sys.stdin:
         result = {'turn': {'id': turn_id}}
         thread_id = params['threadId']
         threads[thread_id]['status'] = {'type': 'active'}
+        if params['input'][0]['text'] == 'complete-before-start-reply':
+            threads[thread_id]['status'] = {'type': 'idle'}
+            emit({'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': turn_id, 'status': 'completed'}}})
+            emit({'id': request['id'], 'result': result})
+            continue
         if params['input'][0]['text'] == 'approval-before-start-reply':
             awaiting_turn = {'id': request['id'], 'result': result}
             emit({'id': 'approval-early', 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': thread_id, 'turnId': turn_id, 'command': 'echo test'}})

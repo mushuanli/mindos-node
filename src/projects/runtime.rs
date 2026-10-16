@@ -1,4 +1,5 @@
 //! A project execution boundary. Future VMM launchers implement this port.
+use super::activity::Activities;
 use super::{model::Project, service};
 use crate::{
     app::State,
@@ -13,9 +14,8 @@ use serde_json::Value;
 use std::{
     fs::File,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Weak},
 };
-use tokio::sync::OwnedRwLockWriteGuard;
 
 pub trait ProjectLauncher: Send + Sync {
     fn prepare_process(&self, plan: &Plan, lock: File) -> Result<Prepared, Error>;
@@ -98,15 +98,11 @@ fn resolve_command(command: &str) -> Result<PathBuf, Error> {
         .canonicalize()
         .map_err(Error::from)
 }
-struct Active {
-    thread: String,
-    _guard: OwnedRwLockWriteGuard<()>,
-}
 pub struct ProjectRuntime {
     state: Weak<State>,
     pub project: Project,
     identity: usize,
-    active: Mutex<Option<Active>>,
+    active: Activities,
 }
 impl ProjectRuntime {
     pub fn new(state: &Arc<State>, identity: usize, project: Project) -> Self {
@@ -114,7 +110,7 @@ impl ProjectRuntime {
             state: Arc::downgrade(state),
             identity,
             project,
-            active: Mutex::new(None),
+            active: Activities::default(),
         }
     }
     pub fn cwd(&self) -> String {
@@ -204,52 +200,66 @@ impl ProjectRuntime {
             .launcher
             .prepare_harness(&plan, lock, &profile.home)
     }
-    pub fn begin(&self, thread: &str) -> Result<(), Error> {
+    pub fn begin(&self, thread: &str, operation: &str) -> Result<(), Error> {
         let state = self.state()?;
-        let mut active = self.active.lock().map_err(|_| Error::internal())?;
-        if active.is_some() {
-            return Err(Error::busy());
+        self.active.begin(&state.files, thread, operation)?;
+        if let Err(error) = self.state() {
+            self.reject(thread, operation);
+            return Err(error);
         }
-        *active = Some(Active {
-            thread: thread.into(),
-            _guard: state.files.exclusive()?,
-        });
         Ok(())
     }
-    pub fn finish(&self, thread: &str) {
-        let mut active = self.active.lock().unwrap();
-        if active.as_ref().is_some_and(|a| a.thread == thread) {
-            if let Some(state) = self.state.upgrade() {
-                for (_, export) in state.exports.iter() {
-                    export.invalidate_revisions();
-                }
+    fn invalidate(&self) {
+        if let Some(state) = self.state.upgrade() {
+            for (_, export) in state.exports.iter() {
+                export.invalidate_revisions();
             }
-            *active = None;
         }
+    }
+    pub fn bind_turn(&self, thread: &str, operation: &str, turn: &str) {
+        self.retire(self.active.bind(thread, operation, turn));
+    }
+    pub fn reject(&self, thread: &str, operation: &str) {
+        self.retire(self.active.reject(thread, operation));
+    }
+    pub fn submission_failed(&self, thread: &str, operation: &str, error: &Error) {
+        if !matches!(error.code, "EIO" | "ETIMEDOUT") {
+            self.reject(thread, operation);
+        }
+    }
+    fn retire(&self, permit: Option<crate::core::gate::ActivityPermit>) {
+        if permit.is_some() {
+            self.invalidate();
+        }
+        // Invalidate revision caches before the last permit reopens the file APIs.
+        drop(permit);
     }
     pub fn event(&self, message: &Value) {
         if message["method"] == "turn/completed" {
-            if let Some(thread) = message["params"]["threadId"].as_str() {
-                self.finish(thread);
+            if let (Some(thread), Some(turn), Some(state)) = (
+                message["params"]["threadId"].as_str(),
+                message["params"]["turn"]["id"].as_str(),
+                self.state.upgrade(),
+            ) {
+                self.retire(self.active.completed(&state.files, thread, turn));
             }
         }
     }
     pub fn stopped(&self, clean: bool) {
-        if !clean && self.active.lock().unwrap().is_some() {
-            if let Some(state) = self.state.upgrade() {
+        self.stop(None, clean);
+    }
+    pub fn stopped_thread(&self, thread: &str, clean: bool) {
+        self.stop(Some(thread), clean);
+    }
+    fn stop(&self, thread: Option<&str>, clean: bool) {
+        let (affected, permits) = self.active.stopped(thread, clean);
+        if affected {
+            if clean {
+                self.invalidate();
+            } else if let Some(state) = self.state.upgrade() {
                 state.files.poison();
             }
         }
-        if clean {
-            let thread = self
-                .active
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|a| a.thread.clone());
-            if let Some(thread) = thread {
-                self.finish(&thread);
-            }
-        }
+        drop(permits);
     }
 }

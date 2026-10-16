@@ -101,7 +101,7 @@ impl Bridge {
             supervise(child, input, output, receiver, events, stop).await;
             let _ = exit.send(true);
         });
-        if let Err(error) = bridge.call("initialize", json!({"clientInfo":{"name":"itookit-agent","version":"0.1.0"},"capabilities":{"experimentalApi":true}})).await {
+        if let Err(error) = bridge.call("initialize", json!({"clientInfo":{"name":"itookit-agent","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await {
             bridge.close(); return Err(error);
         }
         // Notifications have no reply, but are written in the same ordered channel.

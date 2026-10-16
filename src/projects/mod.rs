@@ -1,4 +1,5 @@
 //! Project catalog and authorization shared by files, processes and harnesses.
+mod activity;
 mod api;
 mod directory_sync;
 pub mod model;

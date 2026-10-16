@@ -12,7 +12,7 @@
 use crate::core::error::Error;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
@@ -21,6 +21,26 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 pub struct FileGate {
     inner: Arc<RwLock<()>>,
     poisoned: Arc<AtomicBool>,
+    activity: Arc<Mutex<Activity>>,
+}
+
+#[derive(Default, Debug)]
+struct Activity {
+    count: usize,
+    guard: Option<OwnedRwLockWriteGuard<()>>,
+}
+
+/// Native executions share one exclusive ownership group, never file API access.
+#[derive(Debug)]
+pub struct ActivityPermit(Arc<Mutex<Activity>>);
+impl Drop for ActivityPermit {
+    fn drop(&mut self) {
+        let mut activity = self.0.lock().unwrap();
+        activity.count -= 1;
+        if activity.count == 0 {
+            activity.guard = None;
+        }
+    }
 }
 
 impl FileGate {
@@ -46,6 +66,17 @@ impl FileGate {
             .map_err(|_| Error::busy())
     }
 
+    /// Admit another supervised execution while retaining exclusion from file/process APIs.
+    pub fn activity(&self) -> Result<ActivityPermit, Error> {
+        let mut activity = self.activity.lock().map_err(|_| Error::internal())?;
+        self.check()?;
+        if activity.count == 0 {
+            activity.guard = Some(self.exclusive()?);
+        }
+        activity.count += 1;
+        Ok(ActivityPermit(self.activity.clone()))
+    }
+
     /// Permanently close the gate after an unreaped command.
     pub fn poison(&self) {
         self.poisoned.store(true, Ordering::Release);
@@ -65,5 +96,38 @@ impl FileGate {
             return Err(Error::unavailable());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn execution_permits_exclude_file_apis_until_the_last_owner_leaves() {
+        let gate = FileGate::new();
+        let read = gate.shared().unwrap();
+        assert_eq!(gate.activity().unwrap_err().code, "EBUSY");
+        drop(read);
+        let a = gate.activity().unwrap();
+        let b = gate.activity().unwrap();
+        assert!(gate.shared().is_err());
+        assert!(gate.exclusive().is_err());
+        drop(a);
+        assert!(gate.shared().is_err());
+        drop(b);
+        assert!(gate.shared().is_ok());
+        let write = gate.exclusive().unwrap();
+        assert_eq!(gate.activity().unwrap_err().code, "EBUSY");
+        drop(write);
+        assert!(gate.activity().is_ok());
+    }
+    #[test]
+    fn poisoning_rejects_new_owners_even_when_a_group_is_already_running() {
+        let gate = FileGate::new();
+        let permit = gate.activity().unwrap();
+        gate.poison();
+        assert_eq!(gate.activity().unwrap_err().code, "EIO");
+        drop(permit);
+        assert_eq!(gate.shared().unwrap_err().code, "EIO");
     }
 }

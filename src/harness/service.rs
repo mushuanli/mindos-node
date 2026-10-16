@@ -1,3 +1,4 @@
+use super::mutation_queue::MutationQueues;
 use super::{config::ProfileConfig, driver::HarnessDriver, HarnessPlugins};
 use crate::core::error::Error;
 use serde_json::{json, Value};
@@ -22,7 +23,7 @@ pub struct Harnesses {
 struct Profile {
     driver: Box<dyn HarnessDriver>,
     receipts: Mutex<BTreeMap<String, (String, Value)>>,
-    mutations: Mutex<()>,
+    mutations: MutationQueues,
 }
 
 impl Harnesses {
@@ -43,7 +44,7 @@ impl Harnesses {
                     Arc::new(Profile {
                         driver: plugins.create(config, None)?,
                         receipts: Mutex::new(BTreeMap::new()),
-                        mutations: Mutex::new(()),
+                        mutations: MutationQueues::default(),
                     }),
                 ))
             })
@@ -138,7 +139,7 @@ impl Harnesses {
                         .create(config.clone(), Some(runtime))
                         .map_err(|_| Error::unsupported())?,
                     receipts: Mutex::new(BTreeMap::new()),
-                    mutations: Mutex::new(()),
+                    mutations: MutationQueues::default(),
                 }),
             );
         }
@@ -237,7 +238,7 @@ impl Profile {
         let _serial = if matches!(name.as_str(), "harness_respond" | "harness_interrupt") {
             None
         } else {
-            Some(self.mutations.lock().await)
+            Some(self.mutations.acquire(&name, &args).await)
         };
         let result = self.driver.execute(&name, &args).await;
         let receipt = receipt(&id, result);

@@ -228,21 +228,22 @@ impl Codex {
             return Err(Error::invalid());
         }
         let input = super::attachments::input(prompt, &args["attachments"])?;
+        let operation = string(args, "requestId")?;
         if let Some(runtime) = &self.runtime {
-            runtime.begin(id)?;
+            runtime.begin(id, operation)?;
         }
         let result = bridge
             .persistent_call("turn/start", json!({"threadId":id,"input":input}))
             .await;
-        if let Err(error) = &result {
-            if error.code != "EIO" && error.code != "ETIMEDOUT" {
-                if let Some(runtime) = &self.runtime {
-                    runtime.finish(id);
-                }
-            }
+        if let (Err(error), Some(runtime)) = (&result, &self.runtime) {
+            runtime.submission_failed(id, operation, error);
         }
         let result = result?;
-        Ok(json!({"turnId":string(&result["turn"], "id").map_err(|_| Error::internal())?}))
+        let turn = string(&result["turn"], "id").map_err(|_| Error::internal())?;
+        if let Some(runtime) = &self.runtime {
+            runtime.bind_turn(id, operation, turn);
+        }
+        Ok(json!({"turnId":turn}))
     }
     async fn respond(&self, bridge: &Bridge, args: &Value) -> Result<Value, Error> {
         let id = args.get("nativeRequestId").ok_or_else(Error::invalid)?;
