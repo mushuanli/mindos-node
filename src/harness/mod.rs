@@ -6,6 +6,7 @@ mod codex;
 mod codex_delete;
 pub mod config;
 mod driver;
+mod environment;
 mod events;
 mod history;
 mod plugins;

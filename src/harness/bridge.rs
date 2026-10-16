@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     process::Stdio,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -17,6 +17,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 type Reply = oneshot::Sender<Result<Value, Error>>;
+struct Pending {
+    reply: Reply,
+    method: String,
+    started: Instant,
+}
 enum Command {
     Call(String, Value, Reply),
     Respond(Value, Value, Reply),
@@ -56,17 +61,12 @@ impl Bridge {
             "TMPDIR",
             "OPENAI_API_KEY",
             "CODEX_API_KEY",
-            "HTTPS_PROXY",
-            "HTTP_PROXY",
-            "ALL_PROXY",
-            "NO_PROXY",
-            "SSL_CERT_FILE",
-            "SSL_CERT_DIR",
         ] {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
         }
+        super::environment::inherit(&mut command);
         if runtime.is_none() {
             command.args(["app-server", "--stdio"]);
         }
@@ -211,7 +211,7 @@ async fn supervise(
     }
     stop.cancel();
     for (_, reply) in pending {
-        let _ = reply.send(Err(Error::unavailable()));
+        let _ = reply.reply.send(Err(Error::unavailable()));
     }
     let _ = events
         .lock()
@@ -222,7 +222,7 @@ async fn supervise(
 fn consume(
     chunk: &[u8],
     line: &mut Vec<u8>,
-    pending: &mut HashMap<u64, Reply>,
+    pending: &mut HashMap<u64, Pending>,
     events: &Mutex<Events>,
 ) -> Result<(), Error> {
     for byte in chunk {
@@ -243,10 +243,10 @@ fn consume(
 async fn send_command(
     command: Command,
     input: &mut ChildStdin,
-    pending: &mut HashMap<u64, Reply>,
+    pending: &mut HashMap<u64, Pending>,
     next: &mut u64,
 ) -> Result<(), Error> {
-    pending.retain(|_, reply| !reply.is_closed());
+    pending.retain(|_, reply| !reply.reply.is_closed());
     match command {
         Command::Call(method, params, reply) => {
             if pending.len() >= 128 {
@@ -259,7 +259,14 @@ async fn send_command(
                 let _ = reply.send(Err(error));
                 return Err(error);
             }
-            pending.insert(*next, reply);
+            pending.insert(
+                *next,
+                Pending {
+                    reply,
+                    method,
+                    started: Instant::now(),
+                },
+            );
         }
         Command::Respond(id, result, reply) => {
             let message = if id.is_null() {
@@ -277,7 +284,7 @@ async fn send_command(
 
 fn dispatch(
     message: Value,
-    pending: &mut HashMap<u64, Reply>,
+    pending: &mut HashMap<u64, Pending>,
     events: &Mutex<Events>,
 ) -> Result<(), Error> {
     if message.get("method").is_some() {
@@ -285,16 +292,34 @@ fn dispatch(
     }
     if let Some(reply) = message["id"].as_u64().and_then(|id| pending.remove(&id)) {
         let result = if message.get("error").is_some() {
-            Err(native_error(&message["error"]))
+            let error = native_error(&message["error"]);
+            crate::core::events::emit(
+                crate::core::events::Level::Warn,
+                "harness.native.failed",
+                json!({
+                    "method": reply.method, "rpcCode": message["error"]["code"].as_i64(),
+                    "code": error.code, "durationMs": reply.started.elapsed().as_millis() as u64
+                }),
+            );
+            Err(error)
         } else {
             Ok(message["result"].clone())
         };
-        let _ = reply.send(result);
+        let _ = reply.reply.send(result);
     }
     Ok(())
 }
 
 fn native_error(error: &Value) -> Error {
+    if error["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("already has an active writer"))
+    {
+        return Error::conflict("HARNESS_SESSION_BUSY");
+    }
+    if error["code"] == -32602 {
+        return Error::conflict("HARNESS_INVALID_PARAMS");
+    }
     if error["code"] == -32601 {
         return Error::unsupported();
     }
@@ -305,4 +330,32 @@ fn native_error(error: &Value) -> Error {
         return Error::conflict("HARNESS_HISTORY_PENDING");
     }
     Error::conflict("HARNESS_RPC_ERROR")
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    #[test]
+    fn retains_safe_native_error_categories() {
+        assert_eq!(
+            native_error(
+                &json!({"code":-32600,"message":"thread private-id already has an active writer"})
+            )
+            .code,
+            "HARNESS_SESSION_BUSY"
+        );
+        assert_eq!(
+            native_error(&json!({"code":-32602,"message":"private details"})).code,
+            "HARNESS_INVALID_PARAMS"
+        );
+        assert_eq!(native_error(&json!({"code":-32601})).code, "ECAPABILITY");
+        assert_eq!(
+            native_error(&json!({"code":-32000,"message":"thread not materialized yet"})).code,
+            "HARNESS_HISTORY_PENDING"
+        );
+        assert_eq!(
+            native_error(&json!({"code":-32000,"message":"private details"})).code,
+            "HARNESS_RPC_ERROR"
+        );
+    }
 }

@@ -240,12 +240,6 @@ const ENVIRONMENT: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
 ];
 fn environment(command: &mut tokio::process::Command, config: &ProfileConfig, scoped: bool) {
     command.env_clear();
@@ -255,6 +249,7 @@ fn environment(command: &mut tokio::process::Command, config: &ProfileConfig, sc
             command.env(key, value);
         }
     }
+    crate::harness::environment::inherit(command);
     command
         .env("CLAUDE_CONFIG_DIR", &config.home)
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
