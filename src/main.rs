@@ -32,7 +32,7 @@ async fn main() -> std::process::ExitCode {
             emit(
                 pi_agent::core::events::Level::Error,
                 "server.start_failed",
-                json!({"error": error.to_string()}),
+                json!({"version": env!("CARGO_PKG_VERSION"), "error": error.to_string()}),
             );
             std::process::ExitCode::FAILURE
         }
@@ -41,6 +41,14 @@ async fn main() -> std::process::ExitCode {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--version" || arg == "-V")
+    {
+        println!("pi-agent {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    eprintln!("pi-agent {}", env!("CARGO_PKG_VERSION"));
     if args.first().is_some_and(|s| s == "sync") {
         return pi_agent::sync::admin(&args[1..]).map_err(Into::into);
     }
@@ -49,6 +57,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     pi_agent::core::events::set_level(config.log_level);
     let log_file = pi_agent::core::events::init_file(&config.logging, &path)?;
     eprintln!("  Log file: {}", log_file.display());
+    emit(
+        pi_agent::core::events::Level::Info,
+        "server.starting",
+        json!({"version": env!("CARGO_PKG_VERSION"), "config": path, "logFile": log_file}),
+    );
     let state = State::from_config(&config)?;
     // Advertise execution only after the sandbox has been proven to work.
     if config.execution {

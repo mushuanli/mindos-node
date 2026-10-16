@@ -118,6 +118,8 @@ MindOS 项目右键菜单选择“启用远程命令”后，File Tools 和 Bash
 
 ## 日志
 
+启动首先在终端打印 `pi-agent <版本号>`，配置或初始化失败时也能看到运行版本。`--version` / `-V` 只打印版本并退出，不读取配置或启动服务。日志初始化后先记录 `server.starting`（version、config、logFile），就绪时 `server.ready` 继续记录相同版本，启动失败事件也带版本。正常启动事件遵循 `log_level`（info 及以上详细级别可见）。
+
 顶层 `log_level = "info"` 为默认值，可设 `trace/debug/info/warn/error/off`。服务事件同时输出到 stderr 和配置文件所在目录下的 `logs/pi-agent-<启动时间>-<PID>.jsonl`；启动终端打印绝对日志路径，`server.ready` 也记录版本和路径。以 `tools/config.toml` 启动时，默认目录为 `tools/logs/`。启动提示和 API Key 等终端文本不复制到文件，文件只接收结构化事件。
 
 默认单文件 10 MiB，按完整记录轮转为 `.jsonl.1` 至 `.jsonl.4`，每次启动最多保留 5 份（包含当前文件）；旧启动的日志保留供排查，不自动删除。单条记录不截断，可能独自超过大小阈值。日志文件权限为 `0600`，新建目录为 `0700`。事件直接写入文件，不逐条 `fsync`；日志初始化失败时启动报错，运行中写入失败则提示终端并继续 stderr 日志，不中断任务。
