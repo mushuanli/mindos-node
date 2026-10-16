@@ -37,6 +37,10 @@ access = "rw"                        # 默认 ro；rw 自动加独占锁
 
 默认只读。需要写入时，在对应 `[[exports]]` 增加 `access = "rw"`（自动请求独占锁）。工作台添加挂载时再勾选允许写入；三层权限都允许才能修改。
 
+启动时逐项显示实际打开的导出别名与 `ro/rw`、`read/write` 状态，`server.ready` 事件的 `exports` 数组提供相同信息，写权限同时核对目录能力和当前认证身份。此状态表示服务端导出权限；已注册项目及 MindOS 保存的客户端绑定还可限制为只读，修改导出配置不会自动提升已有项目权限。
+
+已有项目可通过 `project_remount(projectId, revision, access)` 修改根权限，保留 ID、目录和原生会话。权限变更校验导出授权、原目录身份和版本，拒绝在途执行；提交后关闭旧项目 harness 与 watcher，使旧 revision 失效。读写根仍受额外挂载各自的授权限制，不修改导出配置。响应丢失时先读取项目核对结果。
+
 `exclusive` 要求所有修改经本服务完成；目录上的 advisory lock 阻止合作的同根实例，不能阻止编辑器、Git 或其他外部程序。配置内拒绝重叠根与重复别名；不同实例的父子导出根仍需部署侧禁止。共享修改目录使用 `ro`。服务支持 HTTP；公网部署在 TLS 反向代理之后。Origin 白名单只解决浏览器访问，不代替身份认证。用户名/密码使用 UTF-8 HTTP Basic，密码至少 8 字节：用户名取 `username`，未写时读环境变量 `FS_SERVER_USER`；密码取内联 `password` 或 `password_env` 指向的环境变量。Basic 凭据不加密，非可信本机网络应使用 HTTPS。推荐 `api_key` 或 `api_key_env`（至少 24 字节、不设置 `username`），使用 Bearer 认证；旧名称 `token`/`token_env` 仍兼容，但不能和对应新名称同时配置。API Key 与密码认证互斥；同时设置 `username` 与 `token`/`token_env` 会启动失败，避免看起来是 Basic 实际只收 Bearer。内联 secret 写在服务端配置文件中。API Key 按启动连接提示输出到 console，不放入结构化事件或 HTTP 响应；旧 Basic 密码不输出。
 
 在“工具箱 → MCP”新增 HTTP 配置，填写完整 MCP 地址（例如 `http://127.0.0.1:8787/mcp`），将服务启动时输出的 API Key 填入同名字段并测试连接。通用发现响应已携带 pi-agent 能力描述；应用扩展验证后启用项目绑定，不需要额外用户名、密码或勾选框。旧服务器使用其已声明的能力工具。测试后的保存和改名复用验证结果，普通 MCP 不发 pi-agent 专用探测。只有验证成功的 pi-agent 配置可以用于目录绑定，普通 MCP 即使同名也不能绑定。可配置多条连接；工作台新建远程项目选择 MCP 配置和 `/alias/path`。项目展示“服务器名:项目名”，同一服务器、账号与规范化路径复用已有项目，改名不移动目录。

@@ -1,9 +1,48 @@
 //! Connection hints; the entry point separately prints the configured API Key.
-use pi_agent::config::Config;
+use pi_agent::{app::State, config::Config};
+use serde::Serialize;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 
-pub fn print(config: &Config, bound: SocketAddr, server_id: Option<&str>) {
-    eprintln!("{}", summary(config, bound, server_id, route_ip(bound)));
+pub fn print(config: &Config, bound: SocketAddr, state: &State) {
+    eprintln!(
+        "{}",
+        summary(config, bound, state.auth.server_id(), route_ip(bound))
+    );
+    for export in export_access(state) {
+        eprintln!(
+            "  Export /{}: {} (read={}, write={})",
+            export.alias, export.access, export.read, export.write
+        );
+    }
+    if !state.exports.is_empty() {
+        eprintln!("  Project access: saved per project; client bindings may further restrict exports to ro");
+    }
+}
+
+#[derive(Serialize)]
+pub struct ExportAccess<'a> {
+    alias: &'a str,
+    access: &'static str,
+    read: bool,
+    write: bool,
+}
+
+pub fn export_access(state: &State) -> Vec<ExportAccess<'_>> {
+    let client = state.auth.client(0);
+    state
+        .exports
+        .iter()
+        .map(|(alias, export)| {
+            let read = client.may_read(alias);
+            let write = read && client.may_write(alias) && export.writable();
+            ExportAccess {
+                alias,
+                access: if write { "rw" } else { "ro" },
+                read,
+                write,
+            }
+        })
+        .collect()
 }
 
 fn summary(
@@ -137,5 +176,52 @@ mod tests {
         assert!(text.contains("token from environment variable PI_AGENT_TOKEN"));
         assert!(text.contains("<server-ip>"));
         assert!(text.contains(":43210"));
+    }
+
+    fn permission_fixture() -> (Vec<tempfile::TempDir>, std::sync::Arc<State>) {
+        use pi_agent::{
+            auth::{Auth, Client},
+            fs::{Export, Exports},
+        };
+        use std::{collections::BTreeMap, sync::Arc};
+        let roots: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+        let exports = Exports::new(
+            ["docs", "limited", "work"]
+                .into_iter()
+                .zip(&roots)
+                .enumerate()
+                .map(|(index, (alias, root))| {
+                    let export = if index == 0 {
+                        Export::open(root.path())
+                    } else {
+                        Export::exclusive(root.path())
+                    };
+                    (alias.into(), Arc::new(export.unwrap()))
+                })
+                .collect::<BTreeMap<_, _>>(),
+        );
+        let client = Client::new(
+            "private-token".into(),
+            None,
+            vec!["docs".into(), "limited".into(), "work".into()],
+            vec!["work".into()],
+        );
+        let state = State::new(Auth::new(None, vec![client]), exports).unwrap();
+        (roots, state)
+    }
+
+    #[test]
+    fn reports_opened_export_modes_and_the_principal_write_limit() {
+        let (_roots, state) = permission_fixture();
+        let result = serde_json::to_value(export_access(&state)).unwrap();
+        assert_eq!(
+            result,
+            serde_json::json!([
+                {"alias":"docs", "access":"ro", "read":true, "write":false},
+                {"alias":"limited", "access":"ro", "read":true, "write":false},
+                {"alias":"work", "access":"rw", "read":true, "write":true}
+            ])
+        );
+        assert!(!result.to_string().contains("private-token"));
     }
 }

@@ -154,6 +154,30 @@ impl ProjectService {
         validate(state, identity, &project, true)?;
         self.store.save(project, Some(revision))
     }
+    pub fn remount(
+        &self,
+        state: &State,
+        identity: usize,
+        id: &str,
+        revision: u64,
+        access: &str,
+    ) -> Result<Project, Error> {
+        let _serial = self.admission.lock().map_err(|_| Error::internal())?;
+        let mut project = self.get(identity, id)?;
+        if project.revision != revision {
+            return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
+        }
+        if !matches!(access, "ro" | "rw") {
+            return Err(Error::invalid());
+        }
+        project.access = access.into();
+        validate(state, identity, &project, true)?;
+        if self.get(identity, id)?.access == access {
+            return Ok(project);
+        }
+        project.revision += 1;
+        self.store.save(project, Some(revision))
+    }
 }
 pub fn normalize(value: &str) -> Result<String, Error> {
     if value.starts_with('/') || value.contains(['\\', '\0']) {

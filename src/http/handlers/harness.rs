@@ -265,6 +265,11 @@ fn tools() -> Vec<Value> {
             vec!["projectId", "revision"],
         ),
         (
+            "project_remount",
+            "Change project root access with a revision fence; preserves files and sessions, refuses active execution",
+            vec!["projectId", "revision", "access"],
+        ),
+        (
             "project_exec",
             "Run a command using only the server-owned project grants",
             vec![

@@ -71,7 +71,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         pi_agent::core::events::Level::Info,
         "server.ready",
         json!({"address": listener.local_addr()?.to_string(), "serverId": state.auth.server_id(),
-        "execution": config.execution, "exportCount": config.exports.len()}),
+        "execution": config.execution, "exportCount": config.exports.len(), "exports": startup::export_access(&state)}),
     );
     if pi_agent::core::events::enabled(pi_agent::core::events::Level::Info) {
         eprintln!(
@@ -79,7 +79,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             listener.local_addr()?,
             path.display()
         );
-        startup::print(&config, listener.local_addr()?, state.auth.server_id());
+        startup::print(&config, listener.local_addr()?, &state);
         if state.auth.client(0).username().is_none() {
             eprintln!("  API Key: {}", state.auth.client(0).secret());
         }

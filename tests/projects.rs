@@ -50,6 +50,72 @@ async fn register(state: &Arc<State>, path: &str, create: bool) -> Value {
     .unwrap()["project"]
         .clone()
 }
+async fn remount(
+    state: &Arc<State>,
+    project: &Value,
+    access: &str,
+) -> Result<Value, pi_agent::core::error::Error> {
+    call(
+        state,
+        0,
+        "project_remount",
+        json!({"projectId":project["id"], "revision":project["revision"], "access":access}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn remount_preserves_identity_and_files_and_fences_stale_revisions() {
+    let root = tempfile::tempdir().unwrap();
+    let state = State::from_config(&deployment(root.path())).unwrap();
+    let original = register(&state, "group/existing", false).await;
+    let file = root.path().join("exports/group/existing/note.txt");
+    std::fs::write(&file, "preserved").unwrap();
+    let readonly = remount(&state, &original, "ro").await.unwrap()["project"].clone();
+    assert_eq!(readonly["id"], original["id"]);
+    assert_eq!(readonly["access"], "ro");
+    assert_eq!(readonly["revision"], 2);
+    assert_eq!(
+        remount(&state, &original, "rw").await.unwrap_err().code,
+        "PROJECT_REVISION_CHANGED"
+    );
+    let writable = remount(&state, &readonly, "rw").await.unwrap()["project"].clone();
+    assert_eq!(writable["id"], original["id"]);
+    assert_eq!(writable["access"], "rw");
+    assert_eq!(writable["revision"], 3);
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "preserved");
+    let _guard = state.files.exclusive().unwrap();
+    assert_eq!(
+        remount(&state, &writable, "ro").await.unwrap_err().code,
+        "EBUSY"
+    );
+}
+
+#[tokio::test]
+async fn remount_cannot_escalate_a_readonly_export() {
+    let root = tempfile::tempdir().unwrap();
+    let state = State::from_config(&deployment(root.path())).unwrap();
+    let project = call(
+        &state,
+        0,
+        "project_register",
+        json!({"name":"Reference", "alias":"reference", "path":"", "access":"ro"}),
+    )
+    .await
+    .unwrap()["project"]
+        .clone();
+    assert!(remount(&state, &project, "rw").await.is_err());
+    let stored = call(
+        &state,
+        0,
+        "project_read",
+        json!({"projectId":project["id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stored["project"]["access"], "ro");
+    assert_eq!(stored["project"]["revision"], 1);
+}
 #[tokio::test]
 async fn registers_subdirectories_creates_one_child_deduplicates_and_survives_restart() {
     let root = tempfile::tempdir().unwrap();

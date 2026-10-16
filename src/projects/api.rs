@@ -24,6 +24,7 @@ pub async fn call(
             Ok(json!({"project":service.register(state,identity,input)?}))
         }
         "project_configure" => configure(state, identity, service, args).await,
+        "project_remount" => remount(state, identity, service, args).await,
         "project_forget" => {
             let _gate = state.files.exclusive()?;
             let id = text(&args, "projectId")?;
@@ -53,6 +54,30 @@ fn text<'a>(args: &'a Value, key: &str) -> Result<&'a str, Error> {
         .as_str()
         .filter(|s| !s.is_empty())
         .ok_or_else(Error::invalid)
+}
+
+async fn remount(
+    state: &Arc<State>,
+    identity: usize,
+    service: &ProjectService,
+    args: Value,
+) -> Result<Value, Error> {
+    let _gate = state.files.exclusive()?;
+    let id = text(&args, "projectId")?;
+    let project = service.remount(
+        state,
+        identity,
+        id,
+        args["revision"].as_u64().ok_or_else(Error::invalid)?,
+        text(&args, "access")?,
+    )?;
+    state.harness.close_project(id).await;
+    service
+        .watches
+        .lock()
+        .map_err(|_| Error::internal())?
+        .remove_project(id);
+    Ok(json!({"project": project}))
 }
 
 async fn configure(
