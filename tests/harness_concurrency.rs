@@ -241,3 +241,86 @@ async fn a_terminal_event_before_the_start_reply_releases_the_correct_turn() {
     state.harness.close().await;
     assert!(state.files.shared().is_ok());
 }
+
+#[tokio::test]
+async fn thirty_two_sessions_submit_while_another_waits_for_approval() {
+    let (_root, state, base) = fixture().await;
+    let blocked = create(&state, &base, "create-blocked").await;
+    let (s, b, id) = (state.clone(), base.clone(), blocked.clone());
+    let waiting = tokio::spawn(async move {
+        invoke(
+            &s,
+            &b,
+            "harness_turn",
+            "blocked",
+            json!({"sessionId":id,"prompt":"approval-before-start-reply"}),
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let page = invoke(&state, &base, "harness_events", "events", json!({})).await;
+            if !page["requests"].as_array().unwrap().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut tasks = tokio::task::JoinSet::new();
+    for n in 0..32 {
+        let (s, b) = (state.clone(), base.clone());
+        tasks.spawn(async move {
+            let id = create(&s, &b, &format!("create-{n}")).await;
+            let turn = invoke(
+                &s,
+                &b,
+                "harness_turn",
+                &format!("turn-{n}"),
+                json!({"sessionId":id,"prompt":"parallel"}),
+            )
+            .await;
+            assert_eq!(turn["outcome"], "committed", "{turn}");
+            let replay = invoke(&s, &b, "harness_operation", &format!("turn-{n}"), json!({})).await;
+            assert_eq!(replay, turn);
+            interrupt(
+                &s,
+                &b,
+                &format!("interrupt-{n}"),
+                &id,
+                &turn["result"]["turnId"],
+            )
+            .await;
+        });
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .expect("unrelated sessions must finish while approval is pending");
+    assert!(!waiting.is_finished());
+    let approved = invoke(
+        &state,
+        &base,
+        "harness_respond",
+        "approve",
+        json!({"nativeRequestId":"approval-early","response":{"decision":"accept"}}),
+    )
+    .await;
+    assert_eq!(approved["outcome"], "committed");
+    let turn = waiting.await.unwrap();
+    assert_eq!(turn["outcome"], "committed");
+    interrupt(
+        &state,
+        &base,
+        "interrupt-blocked",
+        &blocked,
+        &turn["result"]["turnId"],
+    )
+    .await;
+    assert!(state.files.shared().is_ok());
+    state.harness.close().await;
+}

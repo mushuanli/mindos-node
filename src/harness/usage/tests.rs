@@ -1,5 +1,42 @@
 use super::*;
 use std::io::Write;
+
+#[test]
+fn a_slow_usage_read_does_not_hold_the_other_sessions_cache_lock() {
+    let reader = Arc::new(Reader::default());
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let mut slow_file = tempfile::tempfile().unwrap();
+    append(&mut slow_file, &usage(100, 20, 40, 5));
+    let slow_reader = reader.clone();
+    let slow = std::thread::spawn(move || {
+        slow_reader.read(slow_file, "slow", Kind::Codex, |_| {
+            entered.send(()).unwrap();
+            blocked.recv().unwrap();
+            Ok(())
+        })
+    });
+    waiting
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    let mut file = tempfile::tempfile().unwrap();
+    append(&mut file, &usage(50, 10, 0, 0));
+    let (finished, result) = std::sync::mpsc::channel();
+    let other = std::thread::spawn(move || {
+        finished
+            .send(read(&reader, &file, "other", Kind::Codex))
+            .unwrap()
+    });
+    let snapshot = result.recv_timeout(std::time::Duration::from_secs(1));
+    release.send(()).unwrap();
+    slow.join().unwrap().unwrap();
+    other.join().unwrap();
+    assert_eq!(
+        snapshot.expect("an unrelated session must not wait for the slow read")["totals"]
+            ["outputTokens"],
+        10
+    );
+}
 #[test]
 #[ignore = "Requires an explicit, read-only native transcript fixture"]
 fn readonly_existing_native_usage() {

@@ -10,13 +10,14 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, ChildStdout},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    process::{Child, ChildStdout},
     sync::{mpsc, oneshot, watch},
 };
 use tokio_util::sync::CancellationToken;
 
 type Reply = oneshot::Sender<Result<Value, Error>>;
+type PendingCalls = Arc<Mutex<HashMap<u64, Pending>>>;
 struct Pending {
     reply: Reply,
     method: String,
@@ -159,7 +160,7 @@ async fn await_reply(receive: oneshot::Receiver<Result<Value, Error>>) -> Result
         .map_err(|_| Error::unavailable())?
 }
 
-async fn write(input: &mut ChildStdin, message: &Value) -> Result<(), Error> {
+async fn write(input: &mut (impl AsyncWrite + Unpin), message: &Value) -> Result<(), Error> {
     let mut bytes = serde_json::to_vec(message).map_err(|_| Error::internal())?;
     bytes.push(b'\n');
     input
@@ -170,33 +171,14 @@ async fn write(input: &mut ChildStdin, message: &Value) -> Result<(), Error> {
 
 async fn supervise(
     mut child: Child,
-    mut input: ChildStdin,
-    mut output: ChildStdout,
-    mut receiver: mpsc::Receiver<Command>,
+    input: tokio::process::ChildStdin,
+    output: ChildStdout,
+    receiver: mpsc::Receiver<Command>,
     events: Arc<Mutex<Events>>,
     stop: CancellationToken,
 ) {
-    let mut pending = HashMap::new();
-    let mut next = 0u64;
-    let mut line = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        tokio::select! {
-            _ = stop.cancelled() => break,
-            command = receiver.recv() => {
-                let Some(command) = command else { break; };
-                let sent = tokio::select! {
-                    _ = stop.cancelled() => break,
-                    result = tokio::time::timeout(Duration::from_secs(25), send_command(command, &mut input, &mut pending, &mut next)) => result,
-                };
-                if !matches!(sent, Ok(Ok(()))) { break; }
-            }
-            read = output.read(&mut chunk) => {
-                let Ok(n) = read else { break; }; if n == 0 { break; }
-                if consume(&chunk[..n], &mut line, &mut pending, &events).is_err() { break; }
-            }
-        }
-    }
+    let pending = Arc::new(Mutex::new(HashMap::new()));
+    pump(input, output, receiver, &pending, &events, &stop).await;
     // Reclaim this supervisor's process group before reaping its leader.
     if let Some(pid) = child
         .id()
@@ -210,7 +192,7 @@ async fn supervise(
         runtime.stopped(clean);
     }
     stop.cancel();
-    for (_, reply) in pending {
+    for (_, reply) in pending.lock().unwrap().drain() {
         let _ = reply.reply.send(Err(Error::unavailable()));
     }
     let _ = events
@@ -219,10 +201,53 @@ async fn supervise(
         .push(json!({"method":"harness/disconnected","params":{}}));
 }
 
+/// Keep draining native output while a large submission waits for stdin capacity.
+async fn pump(
+    input: impl AsyncWrite + Unpin,
+    mut output: impl AsyncRead + Unpin,
+    receiver: mpsc::Receiver<Command>,
+    pending: &PendingCalls,
+    events: &Mutex<Events>,
+    stop: &CancellationToken,
+) {
+    let writer = send_commands(input, receiver, pending);
+    tokio::pin!(writer);
+    let mut line = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        tokio::select! {
+            _ = stop.cancelled() => break,
+            _ = &mut writer => break,
+            read = output.read(&mut chunk) => {
+                let Ok(n) = read else { break; }; if n == 0 { break; }
+                if consume(&chunk[..n], &mut line, pending, events).is_err() { break; }
+            }
+        }
+    }
+}
+
+async fn send_commands(
+    mut input: impl AsyncWrite + Unpin,
+    mut receiver: mpsc::Receiver<Command>,
+    pending: &PendingCalls,
+) {
+    let mut next = 0u64;
+    while let Some(command) = receiver.recv().await {
+        let sent = tokio::time::timeout(
+            Duration::from_secs(25),
+            send_command(command, &mut input, pending, &mut next),
+        )
+        .await;
+        if !matches!(sent, Ok(Ok(()))) {
+            break;
+        }
+    }
+}
+
 fn consume(
     chunk: &[u8],
     line: &mut Vec<u8>,
-    pending: &mut HashMap<u64, Pending>,
+    pending: &PendingCalls,
     events: &Mutex<Events>,
 ) -> Result<(), Error> {
     for byte in chunk {
@@ -242,31 +267,17 @@ fn consume(
 
 async fn send_command(
     command: Command,
-    input: &mut ChildStdin,
-    pending: &mut HashMap<u64, Pending>,
+    input: &mut (impl AsyncWrite + Unpin),
+    pending: &PendingCalls,
     next: &mut u64,
 ) -> Result<(), Error> {
-    pending.retain(|_, reply| !reply.reply.is_closed());
     match command {
         Command::Call(method, params, reply) => {
-            if pending.len() >= 128 {
-                let _ = reply.send(Err(Error::too_many("HARNESS_CALL_LIMIT")));
-                return Ok(());
-            }
             *next += 1;
-            let result = write(input, &json!({"id":next,"method":method,"params":params})).await;
-            if let Err(error) = result {
-                let _ = reply.send(Err(error));
-                return Err(error);
+            let message = json!({"id":next,"method":method,"params":params});
+            if register(pending, *next, method, reply) {
+                write(input, &message).await?;
             }
-            pending.insert(
-                *next,
-                Pending {
-                    reply,
-                    method,
-                    started: Instant::now(),
-                },
-            );
         }
         Command::Respond(id, result, reply) => {
             let message = if id.is_null() {
@@ -282,15 +293,32 @@ async fn send_command(
     Ok(())
 }
 
-fn dispatch(
-    message: Value,
-    pending: &mut HashMap<u64, Pending>,
-    events: &Mutex<Events>,
-) -> Result<(), Error> {
+fn register(pending: &PendingCalls, id: u64, method: String, reply: Reply) -> bool {
+    let mut pending = pending.lock().unwrap();
+    pending.retain(|_, reply| !reply.reply.is_closed());
+    if pending.len() >= 128 {
+        let _ = reply.send(Err(Error::too_many("HARNESS_CALL_LIMIT")));
+        return false;
+    }
+    pending.insert(
+        id,
+        Pending {
+            reply,
+            method,
+            started: Instant::now(),
+        },
+    );
+    true
+}
+
+fn dispatch(message: Value, pending: &PendingCalls, events: &Mutex<Events>) -> Result<(), Error> {
     if message.get("method").is_some() {
         return events.lock().unwrap().push(message);
     }
-    if let Some(reply) = message["id"].as_u64().and_then(|id| pending.remove(&id)) {
+    let reply = message["id"]
+        .as_u64()
+        .and_then(|id| pending.lock().unwrap().remove(&id));
+    if let Some(reply) = reply {
         let result = if message.get("error").is_some() {
             let error = native_error(&message["error"]);
             crate::core::events::emit(
@@ -335,6 +363,71 @@ fn native_error(error: &Value) -> Error {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
+
+    async fn backpressure_peer(
+        mut input: tokio::io::DuplexStream,
+        mut output: tokio::io::DuplexStream,
+        sender: mpsc::Sender<Command>,
+        prior: oneshot::Receiver<Result<Value, Error>>,
+        pending: &PendingCalls,
+        events: &Mutex<Events>,
+        stop: &CancellationToken,
+    ) {
+        let (reply, mut receive) = oneshot::channel();
+        sender
+            .send(Command::Call(
+                "turn/start".into(),
+                json!({"input":"x".repeat(65536)}),
+                reply,
+            ))
+            .await
+            .unwrap();
+        // A byte proves the writer entered write_all; the peer then stops reading.
+        input.read_u8().await.unwrap();
+        write(&mut output, &json!({"method":"item/agentMessage/delta","params":{"threadId":"other","itemId":"item","delta":"y".repeat(4096)}})).await.unwrap();
+        write(&mut output, &json!({"id":99,"result":{"ok":true}}))
+            .await
+            .unwrap();
+        assert_eq!(prior.await.unwrap().unwrap()["ok"], true);
+        assert_eq!(
+            events.lock().unwrap().page(None, 0)["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(pending.lock().unwrap().contains_key(&1));
+        assert!(receive.try_recv().is_err());
+        stop.cancel();
+    }
+    #[tokio::test]
+    async fn blocked_submission_keeps_draining_other_sessions_events_and_replies() {
+        let (input, peer_input) = tokio::io::duplex(64);
+        let (peer_output, output) = tokio::io::duplex(64);
+        let (sender, receiver) = mpsc::channel(128);
+        let pending: PendingCalls = Arc::default();
+        let (reply, prior) = oneshot::channel();
+        register(&pending, 99, "thread/read".into(), reply);
+        let events = Mutex::new(Events::new());
+        let stop = CancellationToken::new();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                pump(input, output, receiver, &pending, &events, &stop),
+                backpressure_peer(
+                    peer_input,
+                    peer_output,
+                    sender,
+                    prior,
+                    &pending,
+                    &events,
+                    &stop
+                )
+            );
+        })
+        .await
+        .expect("stdin backpressure must not stop stdout or unrelated replies");
+    }
+
     #[test]
     fn retains_safe_native_error_categories() {
         assert_eq!(

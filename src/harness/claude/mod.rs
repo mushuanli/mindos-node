@@ -3,6 +3,7 @@ mod history;
 mod process;
 mod protocol;
 mod search;
+mod sessions;
 use crate::{
     core::error::Error,
     harness::{
@@ -22,12 +23,11 @@ use std::{
         Arc, Mutex,
     },
 };
-use tokio::sync::Mutex as AsyncMutex;
 static READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 pub struct Claude {
     config: ProfileConfig,
     runtime: Option<Arc<ProjectRuntime>>,
-    sessions: AsyncMutex<BTreeMap<String, Arc<process::Process>>>,
+    sessions: sessions::Sessions,
     events: Arc<Mutex<Events>>,
     closed: AtomicBool,
     usage: Arc<super::usage::Reader>,
@@ -45,7 +45,7 @@ impl Claude {
         Self {
             config,
             runtime,
-            sessions: AsyncMutex::new(BTreeMap::new()),
+            sessions: sessions::Sessions::default(),
             events: Arc::new(Mutex::new(events)),
             closed: AtomicBool::new(false),
             usage: Arc::default(),
@@ -69,10 +69,8 @@ impl Claude {
         if !history::uuid(id) {
             return Err(Error::invalid());
         }
-        if let Some(process) = self.sessions.lock().await.get(id) {
-            if process.alive() {
-                return Ok(process.session.lock().unwrap().clone());
-            }
+        if let Some(process) = self.sessions.get(id).await {
+            return Ok(process.session.lock().unwrap().clone());
         }
         self.catalog()
             .await?
@@ -98,10 +96,9 @@ impl Claude {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        for (id, process) in self.sessions.lock().await.iter() {
-            if process.alive() {
-                sessions.insert(id.clone(), process.session.lock().unwrap().clone());
-            }
+        for process in self.sessions.live() {
+            let session = process.session.lock().unwrap().clone();
+            sessions.insert(session["id"].as_str().unwrap().into(), session);
         }
         list_page(sessions.into_values().collect(), args)
     }
@@ -170,8 +167,7 @@ impl Claude {
         .map_err(|_| Error::internal())?
     }
     async fn live_items(&self, id: &str) -> Vec<Value> {
-        let sessions = self.sessions.lock().await;
-        let Some(process) = sessions.get(id) else {
+        let Some(process) = self.sessions.get(id).await else {
             return Vec::new();
         };
         let items = process.items.lock().unwrap();
@@ -187,18 +183,16 @@ impl Claude {
     }
     async fn attach(&self, session: Value, resume: bool) -> Result<Value, Error> {
         let id = string(&session, "id")?.to_owned();
-        let mut sessions = self.sessions.lock().await;
+        self.check_read()?;
+        let slot = self.sessions.slot(&id)?;
+        let mut attached = slot.lock().await;
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::unavailable());
         }
-        if let Some(process) = sessions.get(&id) {
+        if let Some(process) = attached.as_ref() {
             if process.alive() {
                 return Ok(json!({"session":process.session.lock().unwrap().clone()}));
             }
-        }
-        sessions.retain(|_, process| process.alive());
-        if sessions.len() >= 16 {
-            return Err(Error::too_many("CLAUDE_SESSION_LIMIT"));
         }
         let resume = if resume {
             Some(self.resume_path(&id).await?)
@@ -207,7 +201,7 @@ impl Claude {
         };
         let process = self.start(session, resume).await?;
         let session = process.session.lock().unwrap().clone();
-        sessions.insert(id, process);
+        *attached = Some(process);
         Ok(json!({"session":session}))
     }
     async fn start(
@@ -265,11 +259,8 @@ impl Claude {
     }
     async fn owned(&self, id: &str) -> Result<Arc<process::Process>, Error> {
         self.sessions
-            .lock()
-            .await
             .get(id)
-            .filter(|process| process.alive())
-            .cloned()
+            .await
             .ok_or_else(|| Error::forbidden("HARNESS_NOT_OWNED"))
     }
     async fn turn(&self, args: &Value) -> Result<Value, Error> {
@@ -427,23 +418,12 @@ impl HarnessDriver for Claude {
     }
     fn stop(&self) {
         self.closed.store(true, Ordering::Release);
-        if let Ok(sessions) = self.sessions.try_lock() {
-            for process in sessions.values() {
-                process.close();
-            }
+        for process in self.sessions.live() {
+            process.close();
         }
     }
     fn drain(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            let mut sessions = self.sessions.lock().await;
-            for process in sessions.values() {
-                process.close();
-            }
-            for process in sessions.values() {
-                process.drain().await;
-            }
-            sessions.clear();
-        })
+        Box::pin(self.sessions.drain())
     }
 }
 fn uuid() -> Result<String, Error> {

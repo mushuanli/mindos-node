@@ -9,7 +9,7 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 const MAX_READ: usize = 32 * 1024 * 1024;
@@ -27,7 +27,7 @@ pub(super) enum Kind {
     Claude,
 }
 #[derive(Default)]
-pub(super) struct Reader(Mutex<BTreeMap<String, Cursor>>);
+pub(super) struct Reader(Mutex<BTreeMap<String, Arc<Mutex<Cursor>>>>);
 #[derive(Clone, Default, Serialize, PartialEq, Debug)]
 #[serde(rename_all = "camelCase")]
 struct Tokens {
@@ -68,11 +68,23 @@ impl Reader {
         kind: Kind,
         authorize: impl Fn(&Value) -> Result<(), Error>,
     ) -> Result<Value, Error> {
-        let mut cursors = self.0.lock().unwrap();
-        if !cursors.contains_key(session) && cursors.len() >= 32 {
-            cursors.pop_first();
-        }
-        let cursor = cursors.entry(session.to_owned()).or_default();
+        let cursor = {
+            let mut cursors = self.0.lock().unwrap();
+            if !cursors.contains_key(session) && cursors.len() >= 32 {
+                let idle = cursors
+                    .iter()
+                    .find(|(_, cursor)| Arc::strong_count(cursor) == 1)
+                    .map(|(id, _)| id.clone());
+                match idle {
+                    Some(id) => {
+                        cursors.remove(&id);
+                    }
+                    None => return Err(Error::too_many("HARNESS_USAGE_BUSY")),
+                }
+            }
+            cursors.entry(session.to_owned()).or_default().clone()
+        };
+        let mut cursor = cursor.lock().unwrap();
         let result = cursor.read_file(file, session, kind, authorize);
         if result.is_err() {
             *cursor = Cursor::default();

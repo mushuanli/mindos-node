@@ -156,16 +156,27 @@ impl Harnesses {
         profile.driver.read(name, args).await
     }
     pub async fn close_project(&self, id: &str) {
-        let mut scoped = self.scoped.lock().await;
-        let keys = scoped
-            .keys()
-            .filter(|key| key.starts_with(&format!("{id}:")))
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in keys {
-            if let Some(profile) = scoped.remove(&key) {
+        let profiles = {
+            let scoped = self.scoped.lock().await;
+            let profiles = scoped
+                .iter()
+                .filter(|(key, _)| key.starts_with(&format!("{id}:")))
+                .map(|(key, profile)| (key.clone(), profile.clone()))
+                .collect::<Vec<_>>();
+            for (_, profile) in &profiles {
                 profile.driver.stop();
-                profile.driver.drain().await;
+            }
+            profiles
+        };
+        // Keep fenced entries visible until cleanup ends, without locking other projects.
+        futures_util::future::join_all(profiles.iter().map(|(_, p)| p.driver.drain())).await;
+        let mut scoped = self.scoped.lock().await;
+        for (key, profile) in profiles {
+            if scoped
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &profile))
+            {
+                scoped.remove(&key);
             }
         }
     }
@@ -234,19 +245,22 @@ impl Profile {
         id: String,
         fingerprint: String,
     ) -> Value {
-        // Replies and interruption must pass a start/resume waiting on native approval.
-        let _serial = if matches!(name.as_str(), "harness_respond" | "harness_interrupt") {
-            None
-        } else {
-            Some(self.mutations.acquire(&name, &args).await)
-        };
-        let result = self.driver.execute(&name, &args).await;
+        let result = self.execute_native(&name, &args).await;
         let receipt = receipt(&id, result);
         self.receipts
             .lock()
             .await
             .insert(id, (fingerprint, receipt.clone()));
         receipt
+    }
+    async fn execute_native(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        // Replies and interruption must pass a start/resume waiting on native approval.
+        let _serial = if matches!(name, "harness_respond" | "harness_interrupt") {
+            None
+        } else {
+            Some(self.mutations.acquire(name, args).await?)
+        };
+        self.driver.execute(name, args).await
     }
     async fn reserve(&self, id: &str, fingerprint: &str) -> Result<Option<Value>, Error> {
         let mut receipts = self.receipts.lock().await;
@@ -301,4 +315,65 @@ fn is_mutation(name: &str) -> bool {
             | "harness_interrupt"
             | "harness_respond"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::future::BoxFuture;
+    use tokio::sync::Notify;
+
+    struct SlowDrain {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+    impl HarnessDriver for SlowDrain {
+        fn descriptor(&self) -> Value {
+            json!({})
+        }
+        fn read<'a>(&'a self, _: &'a str, _: Value) -> BoxFuture<'a, Result<Value, Error>> {
+            Box::pin(async { Ok(json!({})) })
+        }
+        fn execute<'a>(&'a self, _: &'a str, _: &'a Value) -> BoxFuture<'a, Result<Value, Error>> {
+            Box::pin(async { Ok(json!({})) })
+        }
+        fn stop(&self) {}
+        fn drain(&self) -> BoxFuture<'_, ()> {
+            Box::pin(async {
+                self.entered.notify_one();
+                self.release.notified().await;
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn draining_a_project_does_not_hold_the_registry_lock() {
+        let harness = Arc::new(Harnesses::new(Vec::new(), "epoch".into()).unwrap());
+        let (entered, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        harness.scoped.lock().await.insert(
+            "slow:1:codex:false".into(),
+            Arc::new(Profile {
+                driver: Box::new(SlowDrain {
+                    entered: entered.clone(),
+                    release: release.clone(),
+                }),
+                receipts: Mutex::default(),
+                mutations: MutationQueues::default(),
+            }),
+        );
+        let closing = harness.clone();
+        let work = tokio::spawn(async move {
+            closing.close_project("slow").await;
+        });
+        entered.notified().await;
+        let available =
+            tokio::time::timeout(std::time::Duration::from_secs(1), harness.scoped.lock()).await;
+        // Release cleanup before asserting so a regression cannot strand the test task.
+        release.notify_one();
+        let registry = available.expect("unrelated project requests must not wait for shutdown");
+        assert!(registry.contains_key("slow:1:codex:false"));
+        drop(registry);
+        work.await.unwrap();
+        assert!(harness.scoped.lock().await.is_empty());
+    }
 }
