@@ -7,6 +7,7 @@ mod codex_delete;
 pub mod config;
 mod diagnostics;
 mod driver;
+mod dsh;
 mod environment;
 mod events;
 mod history;

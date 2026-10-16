@@ -29,6 +29,7 @@ impl Default for HarnessPlugins {
         plugins
             .entries
             .insert("claude".into(), Arc::new(ClaudePlugin));
+        plugins.entries.insert("dsh".into(), Arc::new(DshPlugin));
         plugins
     }
 }
@@ -48,6 +49,9 @@ impl HarnessPlugins {
         Ok(())
     }
     pub fn validate(&self, profile: &ProfileConfig) -> Result<(), String> {
+        if profile.kind != "dsh" && profile.dsh.is_some() {
+            return Err("DSH options require kind = dsh".into());
+        }
         self.plugin(&profile.kind)?.validate(profile)
     }
     pub fn create(
@@ -63,6 +67,23 @@ impl HarnessPlugins {
         self.entries
             .get(kind)
             .ok_or_else(|| format!("Harness plugin is not registered: {kind}"))
+    }
+}
+
+struct DshPlugin;
+impl HarnessPlugin for DshPlugin {
+    fn kind(&self) -> &'static str {
+        "dsh"
+    }
+    fn validate(&self, profile: &ProfileConfig) -> Result<(), String> {
+        super::dsh::config::validate(profile)
+    }
+    fn create(
+        &self,
+        profile: ProfileConfig,
+        runtime: Option<Arc<ProjectRuntime>>,
+    ) -> Result<Box<dyn HarnessDriver>, String> {
+        Ok(Box::new(super::dsh::Dsh::new(profile, runtime)))
     }
 }
 

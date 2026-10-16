@@ -19,6 +19,7 @@ pub struct ProfileConfig {
     pub projects: bool,
     #[serde(default)]
     pub workspaces: Vec<WorkspaceConfig>,
+    pub dsh: Option<super::dsh::config::DshConfig>,
 }
 
 #[derive(Clone, Deserialize)]
