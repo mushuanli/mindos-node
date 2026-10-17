@@ -17,6 +17,7 @@ pub mod registry;
 pub mod revision;
 pub mod seq;
 pub mod upload;
+mod upload_journal;
 
 pub use export::Export;
 pub use model::{Entry, Stat};

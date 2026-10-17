@@ -102,10 +102,10 @@ fn open(config: &ExportConfig, index: usize, root: &Path) -> Result<Export, Stri
         Access::Ro => Export::open(root),
         Access::Rw => Export::exclusive(root),
     };
-    opened.map_err(|_| {
+    opened.map_err(|error| {
         format!(
-            "exports[{index}]: cannot open or lock path {:?}",
-            config.path
+            "exports[{index}]: cannot initialize path {:?} ({})",
+            config.path, error.code
         )
     })
 }

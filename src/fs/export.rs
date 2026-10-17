@@ -19,7 +19,7 @@ use rustix::fs::{openat2, Mode, OFlags, ResolveFlags};
 use std::{
     fs::File,
     path::Path,
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -29,6 +29,7 @@ const DIRECTORY_LIMIT: usize = 100_000;
 pub struct Export {
     root: File,
     revisions: Option<Mutex<Revisions>>,
+    pub(crate) upload_journal: Option<Arc<super::upload_journal::UploadJournal>>,
 }
 
 impl Export {
@@ -41,6 +42,7 @@ impl Export {
         let export = Self {
             root,
             revisions: None,
+            upload_journal: None,
         };
         // Probe the resolution mechanism now rather than at first use.
         export.open_path("", OFlags::PATH)?;
@@ -53,8 +55,18 @@ impl Export {
         rustix::fs::flock(
             &export.root,
             rustix::fs::FlockOperation::NonBlockingLockExclusive,
-        )?;
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::WOULDBLOCK {
+                Error::busy()
+            } else {
+                error.into()
+            }
+        })?;
         export.revisions = Some(Mutex::new(Revisions::new()?));
+        export.upload_journal = Some(Arc::new(super::upload_journal::UploadJournal::open(
+            &export.root,
+        )?));
         recovery::clean_uploads(&export)?;
         Ok(export)
     }

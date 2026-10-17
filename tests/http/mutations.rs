@@ -10,6 +10,17 @@ fn writable(root: &std::path::Path) -> axum::Router {
     app_export(Export::exclusive(root).unwrap())
 }
 
+fn has_staged_file(root: &std::path::Path) -> bool {
+    std::fs::read_dir(root).unwrap().any(|entry| {
+        let entry = entry.unwrap();
+        entry.file_type().unwrap().is_file()
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".itookit-upload-")
+    })
+}
+
 #[tokio::test]
 async fn conditional_replace_serializes_writers_and_never_replays_ids() {
     let root = tempfile::tempdir().unwrap();
@@ -79,11 +90,7 @@ async fn conditional_replace_serializes_writers_and_never_replays_ids() {
             .status(),
         StatusCode::CONFLICT
     );
-    assert!(!std::fs::read_dir(root.path()).unwrap().any(|v| v
-        .unwrap()
-        .file_name()
-        .to_string_lossy()
-        .starts_with(".itookit-upload-")));
+    assert!(!has_staged_file(root.path()));
 }
 
 #[tokio::test]
@@ -265,11 +272,12 @@ async fn cancellation_during_upload_cleans_staging_and_never_publishes() {
         ),
     );
     for _ in 0..100 {
-        if std::fs::read_dir(root.path()).unwrap().next().is_some() {
+        if has_staged_file(root.path()) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
+    assert!(has_staged_file(root.path()));
     let response = server
         .clone()
         .oneshot(
@@ -285,7 +293,8 @@ async fn cancellation_during_upload_cleans_staging_and_never_publishes() {
         upload.await.unwrap().unwrap().status(),
         StatusCode::REQUEST_TIMEOUT
     );
-    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    assert!(!has_staged_file(root.path()));
+    assert!(!root.path().join("cancelled").exists());
     let response = server
         .oneshot(
             request("/v1/fs/docs/operations/uploading")

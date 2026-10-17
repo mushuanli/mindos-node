@@ -1,70 +1,92 @@
-//! Startup recovery for writable exports.
-//!
-//! Staged uploads are created inside the target directory under a reserved
-//! prefix. If the service died mid-upload they are abandoned, so they are
-//! removed before the export starts serving. This runs while the writer lock
-//! is already held, so no cooperating writer can be using them.
-//!
-//! Recovery is best effort: the directory is shared with editors, git and
-//! other tools, so an entry this routine cannot inspect must never prevent the
-//! export from opening. Only names with the reserved spelling that are not
-//! directories are removed; a directory is left untouched because the service
-//! never creates one under that name.
-
-use crate::{core::error::Error, fs::export::Export, fs::path};
-use rustix::fs::{AtFlags, FileType, OFlags};
-
-/// Upper bound on directory entries inspected during recovery.
-const MAX_VISITED: usize = 1_000_000;
+//! Recover only journaled uploads under the export's exclusive writer lock.
+use crate::{
+    core::{
+        error::Error,
+        events::{self, Level},
+    },
+    fs::{export::Export, path, upload_journal::PendingUpload},
+};
+use rustix::fs::{AtFlags, FileType};
+use std::{fs::File, os::unix::fs::MetadataExt};
 
 pub(crate) fn clean_uploads(export: &Export) -> Result<(), Error> {
-    let mut pending = vec![String::new()];
-    let mut visited = 0usize;
-    while let Some(directory_path) = pending.pop() {
-        // An unreadable or already-vanished subtree is not a reason to refuse service.
-        let Ok(directory) = export.open_dir(&directory_path) else {
-            continue;
-        };
-        for entry in rustix::fs::Dir::read_from(&directory)? {
-            let entry = entry?;
-            let Ok(name) = entry.file_name().to_str() else {
-                continue;
-            };
-            if name == "." || name == ".." {
-                continue;
-            }
-            visited += 1;
-            if visited > MAX_VISITED {
-                return Err(Error::invalid());
-            }
-            if path::is_reserved(name) {
-                if remove_staged(&directory, name) {
-                    continue;
-                }
-                // A directory under a reserved name was not created by this
-                // service; leave the subtree alone.
-                continue;
-            }
-            // Symlinks are not followed, so they are never descended into.
-            let child = crate::fs::export::child_path(&directory_path, name);
-            if let Ok(file) = export.open_path(&child, OFlags::PATH) {
-                if file.metadata()?.is_dir() {
-                    pending.push(child);
-                }
+    let journal = export.journal()?;
+    let (mut cursor, mut recovered, mut retained) = (0, 0, 0);
+    loop {
+        let batch = journal.batch(cursor)?;
+        if batch.is_empty() {
+            break;
+        }
+        for upload in batch {
+            cursor = upload.id;
+            let cleaned = export
+                .open_dir(&upload.parent)
+                .ok()
+                .and_then(|parent| cleanup(&parent, &upload).ok())
+                .unwrap_or(false);
+            if cleaned {
+                journal.forget(upload.id)?;
+                recovered += 1;
+            } else {
+                retained += 1;
             }
         }
     }
+    report(recovered, retained);
     Ok(())
 }
 
-/// Remove one staging entry if it is a file or symlink. Returns whether it was
-/// handled, so a directory can be skipped instead of failing the whole scan.
-fn remove_staged(directory: &std::fs::File, name: &str) -> bool {
-    let Ok(stat) = rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) else {
-        return false;
-    };
-    if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
-        return false;
+fn report(recovered: usize, retained: usize) {
+    if recovered > 0 || retained > 0 {
+        events::emit(
+            if retained > 0 {
+                Level::Warn
+            } else {
+                Level::Info
+            },
+            "uploads.recovered",
+            serde_json::json!({"recovered": recovered, "retained": retained}),
+        );
     }
-    rustix::fs::unlinkat(directory, name, AtFlags::empty()).is_ok()
+}
+
+/// Retain replacements, symlinks and unverified create intents instead of deleting them.
+pub(crate) fn cleanup(parent: &File, upload: &PendingUpload) -> Result<bool, Error> {
+    if !valid_name(&upload.name) || !matches_parent(parent, upload)? {
+        return Ok(false);
+    }
+    match matches_file(parent, upload)? {
+        Some(false) => return Ok(false),
+        Some(true) => rustix::fs::unlinkat(parent, upload.name.as_str(), AtFlags::empty())?,
+        None => (),
+    }
+    parent.sync_all()?;
+    Ok(true)
+}
+
+fn matches_parent(parent: &File, upload: &PendingUpload) -> Result<bool, Error> {
+    let metadata = parent.metadata()?;
+    Ok(metadata.dev() as i64 == upload.parent_device
+        && metadata.ino() as i64 == upload.parent_inode)
+}
+
+fn matches_file(parent: &File, upload: &PendingUpload) -> Result<Option<bool>, Error> {
+    let current = match rustix::fs::statat(parent, upload.name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+    {
+        Ok(current) => current,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(Some(
+        FileType::from_raw_mode(current.st_mode) == FileType::RegularFile
+            && upload.device == Some(current.st_dev as i64)
+            && upload.inode == Some(current.st_ino as i64),
+    ))
+}
+
+fn valid_name(name: &str) -> bool {
+    name.strip_prefix(path::RESERVED_PREFIX)
+        .is_some_and(|suffix| {
+            suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
 }

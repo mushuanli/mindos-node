@@ -20,13 +20,14 @@ use crate::{
         model::{attributes, Stat},
         path,
         revision::Revisions,
+        upload_journal::{PendingUpload, UploadJournal},
     },
 };
-use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags};
+use rustix::fs::{Mode, OFlags, RenameFlags};
 use std::{
     fs::File,
     os::unix::fs::{MetadataExt, PermissionsExt},
-    sync::MutexGuard,
+    sync::{Arc, MutexGuard},
 };
 
 /// Mode for a newly created file. The service does not consult `umask`, so the
@@ -46,11 +47,18 @@ pub struct StagedUpload {
     parent: File,
     name: String,
     file: File,
+    journal: Arc<UploadJournal>,
+    pending: PendingUpload,
 }
 
 impl Drop for StagedUpload {
     fn drop(&mut self) {
-        let _ = rustix::fs::unlinkat(&self.parent, self.name.as_str(), AtFlags::empty());
+        if matches!(
+            super::recovery::cleanup(&self.parent, &self.pending),
+            Ok(true)
+        ) {
+            let _ = self.journal.forget(self.pending.id);
+        }
     }
 }
 
@@ -64,25 +72,46 @@ impl StagedUpload {
 impl Export {
     /// Create a staging file next to `path`.
     pub fn stage(&self, path: &str) -> Result<StagedUpload, Error> {
+        let journal = self.journal()?;
         let (parent, _) = self.parent(path)?;
-        let mut random = [0u8; RANDOM_BYTES];
-        getrandom::getrandom(&mut random).map_err(|_| Error::internal())?;
-        let name = format!(
-            "{}{}",
-            path::RESERVED_PREFIX,
-            random
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        );
-        let file = File::from(rustix::fs::openat(
-            &parent,
-            name.as_str(),
-            OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            STAGING_MODE,
-        )?);
-        Ok(StagedUpload { parent, name, file })
+        let name = staging_name()?;
+        let parent_path = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+        let mut pending = journal.prepare(parent_path, &name, &parent)?;
+        let file = match create_file(&parent, &name) {
+            Ok(file) => file,
+            Err(error) => {
+                journal.forget(pending.id)?;
+                return Err(error);
+            }
+        };
+        pending.identify(&file)?;
+        let staged = StagedUpload {
+            pending,
+            parent,
+            name,
+            file,
+            journal,
+        };
+        staged.parent.sync_all()?;
+        staged.journal.identify(staged.pending.id, &staged.file)?;
+        Ok(staged)
     }
+}
+
+fn staging_name() -> Result<String, Error> {
+    let mut random = [0u8; RANDOM_BYTES];
+    getrandom::getrandom(&mut random).map_err(|_| Error::internal())?;
+    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!("{}{suffix}", path::RESERVED_PREFIX))
+}
+
+fn create_file(parent: &File, name: &str) -> Result<File, Error> {
+    Ok(File::from(rustix::fs::openat(
+        parent,
+        name,
+        OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        STAGING_MODE,
+    )?))
 }
 
 /// Publish a staged upload as `path`.
@@ -142,9 +171,7 @@ fn publish(
     checkpoint()?;
     // Give the published inode the mode the caller would expect to find.
     rustix::fs::fchmod(&upload.file, mode)?;
-    if executable.is_some() {
-        upload.file.sync_all()?;
-    }
+    upload.file.sync_all()?;
     let mut stat = attributes(&upload.file)?;
     stat.revision = Some(revisions.get(&upload.file)?);
     rustix::fs::renameat_with(

@@ -71,6 +71,7 @@ async fn public_and_named_readers_get_only_their_directory_capabilities() {
 #[tokio::test]
 async fn read_only_is_enforced_for_direct_mutations_and_seqfile_without_project_headers() {
     let (root, state) = fixture();
+    let initial_entries = std::fs::read_dir(root.path().join("docs")).unwrap().count();
     for token in [None, Some(BOB)] {
         for change in [
             json!({"action":"mkdir","path":"created"}),
@@ -115,7 +116,7 @@ async fn read_only_is_enforced_for_direct_mutations_and_seqfile_without_project_
     );
     assert_eq!(
         std::fs::read_dir(root.path().join("docs")).unwrap().count(),
-        1
+        initial_entries
     );
 }
 #[tokio::test]

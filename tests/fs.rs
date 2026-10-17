@@ -14,7 +14,7 @@ fn exclusive_open_holds_the_lock_and_a_second_open_fails() {
 }
 
 #[test]
-fn restart_retires_validators_and_recovers_reserved_uploads() {
+fn restart_retires_validators_without_scanning_unregistered_uploads() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("note"), "content").unwrap();
     let old = {
@@ -26,7 +26,7 @@ fn restart_retires_validators_and_recovers_reserved_uploads() {
     std::fs::create_dir(root.path().join(".itookit-upload-directory")).unwrap();
     let export = Export::exclusive(root.path()).unwrap();
     assert_ne!(export.stat("note").unwrap().unwrap().revision, old);
-    assert!(!root.path().join(".itookit-upload-abandoned").exists());
+    assert!(root.path().join(".itookit-upload-abandoned").exists());
     assert!(root.path().join(".itookit-upload-directory").exists());
 }
 
