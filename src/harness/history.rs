@@ -174,7 +174,10 @@ fn record_item(record: &Value, at: u64, turn: Option<&str>) -> Option<Value> {
         .map(|id| json!(id))
         .unwrap_or_else(|| json!(format!("rollout:{at}")));
     entry["timestamp"] = super::presentation::time_ms(&record["timestamp"]);
-    entry["turnId"] = json!(record["payload"]["turn_id"].as_str().or(turn));
+    entry["turnId"] = json!(record["payload"]["turn_id"]
+        .as_str()
+        .or(record["payload"]["internal_chat_message_metadata_passthrough"]["turn_id"].as_str())
+        .or(turn));
     Some(entry)
 }
 fn page(bytes: &[u8], start: u64, turn: Option<String>, summary: bool) -> Result<Value, Error> {
@@ -206,9 +209,7 @@ fn item(record: &Value) -> Option<Value> {
             if !matches!(role, "user" | "assistant") {
                 return None;
             }
-            Some(
-                json!({"type":if role=="user" {"userMessage"} else {"agentMessage"},"content":payload["content"]}),
-            )
+            Some(message_item(payload, role))
         }
         "function_call" | "custom_tool_call" => Some(
             json!({"type":"toolCall","name":payload["name"],"arguments":payload["arguments"],"input":payload["input"]}),
@@ -221,9 +222,55 @@ fn item(record: &Value) -> Option<Value> {
     }
 }
 
+fn message_item(payload: &Value, role: &str) -> Value {
+    let mut item = json!({"type":if role=="user" {"userMessage"} else {"agentMessage"},"content":payload["content"]});
+    let kinds = &payload["internal_chat_message_metadata_passthrough"]["content_item_kinds"];
+    if role == "user"
+        && kinds.as_array().is_some_and(|kinds| {
+            payload["content"].as_array().is_some_and(|content| {
+                kinds.len() == content.len() && kinds.iter().all(Value::is_string)
+            })
+        })
+    {
+        item["contentItemKinds"] = kinds.clone();
+    }
+    item
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn user_provenance_and_native_turn_survive_history_projection() {
+        let record = json!({"type":"response_item","payload":{"id":"context","type":"message","role":"user",
+            "content":[{"type":"input_text","text":"project rules"},{"type":"input_text","text":"actual prompt"}],
+            "internal_chat_message_metadata_passthrough":{"turn_id":"native-turn","content_item_kinds":["agents_md.instructions","user.text"]}}});
+        let item = record_item(&record, 0, Some("older-turn")).unwrap();
+        assert_eq!(item["turnId"], "native-turn");
+        assert_eq!(
+            item["contentItemKinds"],
+            json!(["agents_md.instructions", "user.text"])
+        );
+        assert_eq!(
+            super::super::presentation::item(&item).unwrap()["content"],
+            record["payload"]["content"]
+        );
+    }
+    #[test]
+    fn malformed_or_absent_provenance_never_classifies_prompt_text() {
+        let mut record = json!({"type":"response_item","payload":{"type":"message","role":"user",
+            "content":[{"text":"# AGENTS.md instructions for /project"}]}});
+        assert!(item(&record).unwrap().get("contentItemKinds").is_none());
+        for kinds in [
+            json!([]),
+            json!([12]),
+            json!(["agents_md.instructions", "user.text"]),
+        ] {
+            record["payload"]["internal_chat_message_metadata_passthrough"] =
+                json!({"content_item_kinds":kinds});
+            assert!(item(&record).unwrap().get("contentItemKinds").is_none());
+        }
+    }
     fn message(index: usize, text: &str) -> String {
         format!(
             "{}\n",

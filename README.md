@@ -251,6 +251,8 @@ Codex 声明 capabilities.search，`harness_session_search` 接收 profileId、�
 
 ### 原生管理与内联附件
 
+Codex rollout 历史的用户项保留 `internal_chat_message_metadata_passthrough.content_item_kinds` 为 `contentItemKinds`，仅在类型和数量与 content 数组对齐时透传，并优先采用同一元数据的原生 turn_id。项目指令、环境和真实用户正文因此可由展示层区分；不按文本内容猜测来源、不删除或改写上下文、不改变发送行为。旧日志或没有此元数据的其他 harness 不补造来源。
+
 Codex 提供 `harness_rename`、`harness_archive`、`harness_unarchive`、`harness_delete`，均要求可写授权并使用 epoch/requestId 回执去重。rename 调用 thread/name/set，不 resume；archive 允许本实例持有且原生状态明确 idle，或原生 notLoaded 历史；后者不表示外部进程已空闲，归档不会停止独立 CLI。归档前核验派生子会话的授权与状态，归档后释放所有权；unarchive 核验恢复的原生 cwd，不 resume、不启动 turn。delete 调用原生 thread/delete，要求受控 idle 或已归档 notLoaded，前置有界核验全部派生子会话的授权和状态；回执返回 deletedSessionIds，原生负责日志及元数据删除，项目文件保留。
 
 `harness_turn.attachments` 接受最多 5 个内联 text/image：UTF-8 文本每个 64 KiB，PNG/JPEG/WebP 图片解码每个 256 KiB，编码内容总计 512 KiB。拒绝非法名称、二进制文本、宿主路径、远程 URL、其他图片格式和超限内容，在启动 turn 前完成验证。MCP JSON body 上限为 2 MiB，以容纳合法附件的 JSON 转义；其他 JSON 路由仍为 512 KiB。
