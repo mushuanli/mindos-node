@@ -443,3 +443,42 @@ async fn thirty_two_sessions_admit_work_and_deliver_deltas_independently() {
     assert_eq!(received, 32);
     service.close().await;
 }
+
+#[tokio::test]
+async fn searches_authorized_titles_and_prompts_beyond_loaded_history_pages() {
+    let root = tempfile::tempdir().unwrap();
+    let host = fixture::Host::new(root.path()).await;
+    host.state.rows.lock().unwrap().get_mut("existing").unwrap()["projections"] =
+        json!({"values":{"title":"Older session"}});
+    host.state.records.lock().unwrap().insert("existing".into(), (0..151).map(|seq| json!({"type":"event","event":{
+        "seq":seq,"type":"user/message","data":{"content":[{"type":"text","text":format!("message {seq}")}]}}})).collect());
+    let service = service(root.path(), &host.url);
+    assert_eq!(
+        service.profiles()["profiles"][0]["capabilities"]["searchPrompts"],
+        true
+    );
+    for (query, mode) in [
+        ("Older session", "title"),
+        ("message 0", "prompt"),
+        ("message 0", "content"),
+    ] {
+        let result = service
+            .call(
+                "harness_session_search",
+                json!({"profileId":"dsh","query":query,"mode":mode}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["matches"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(result["matches"][0]["sessionId"], "existing");
+        assert_eq!(result["truncated"], false);
+    }
+    assert!(host
+        .state
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|call| call["method"] == "session/page"));
+    service.close().await;
+}

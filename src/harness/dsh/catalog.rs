@@ -118,6 +118,15 @@ impl Dsh {
                 Ok(json!({"session":self.summary(&client,string(&args,"sessionId")?).await?}))
             }
             "harness_session_read" => self.history(&client, &args).await,
+            "harness_session_search" => {
+                let client = &*client;
+                super::super::search::search_with(
+                    &args,
+                    |input| Box::pin(async move { self.list(client, &input).await }),
+                    |input| Box::pin(async move { self.history(client, &input).await }),
+                )
+                .await
+            }
             "harness_events" => {
                 let page = self.events.lock().unwrap().page(
                     args["eventEpoch"].as_str(),

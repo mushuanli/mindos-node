@@ -175,7 +175,7 @@ fn capabilities(state: &State, identity: usize) -> Value {
         "fileProtocol":"fs-agent-http-v1","harness":state.harness.enabled() && client.has_harness(),
         "projects":state.projects.is_some() && !client.anonymous(),"sync":state.sync.as_ref().is_some_and(|s|client.legacy() || s.principal_id() == client.id()),
         "directorySync":state.projects.is_some() && state.sync.as_ref().is_some_and(|s|client.legacy() || s.principal_id() == client.id()),
-        "fileWatch":state.projects.is_some(),"fileSearch":state.projects.is_some() && state.execution.ready() && std::path::Path::new("/usr/bin/rg").is_file(),"directorySyncVersion":2,"projectProtocol":"fs-agent-project-v1"})
+        "fileWatch":state.projects.is_some(),"fileSearchVersion":2,"fileSearch":state.projects.is_some() && state.execution.ready() && std::path::Path::new("/usr/bin/rg").is_file(),"directorySyncVersion":2,"projectProtocol":"fs-agent-project-v1"})
 }
 
 fn tools() -> Vec<Value> {
@@ -251,7 +251,7 @@ fn tools() -> Vec<Value> {
         ("project_unwatch", "Release a project directory observer", vec!["projectId", "revision", "watchId"]),
         (
             "project_search",
-            "Search literal paths or text in the pinned read-only project view",
+            "Search literal names, paths or text in the pinned read-only project view; optional directory limits descendants",
             vec!["projectId", "revision", "query", "mode"],
         ),
         (
@@ -317,7 +317,7 @@ fn tools() -> Vec<Value> {
             vec!["profileId", "sessionId"],
         ),
         ("harness_session_usage", "Read native transcript token usage without execution or pricing", vec!["profileId", "sessionId"]),
-        ("harness_session_search", "Search all authorized native session titles or parsed displayed history with explicit capacity limits", vec!["profileId", "query", "mode"]),
+        ("harness_session_search", "Search authorized native session titles, displayed content or user prompts with explicit capacity limits", vec!["profileId", "query", "mode"]),
         ("harness_rename", "Rename an authorized native session without adopting execution", vec!["profileId", "epoch", "requestId", "sessionId", "name"]),
         ("harness_archive", "Archive an idle session owned by this gateway; preserves native history", vec!["profileId", "epoch", "requestId", "sessionId"]),
         ("harness_delete", "Permanently delete a native session and its authorized spawned descendants", vec!["profileId", "epoch", "requestId", "sessionId"]),
@@ -426,12 +426,16 @@ fn tool(name: &str, description: &str, required: Vec<&str>) -> Value {
     }
     properties.insert("name".into(), json!({"type":"string"}));
     properties.insert(
+        "directory".into(),
+        json!({"type":"string","maxLength":4096}),
+    );
+    properties.insert(
         "query".into(),
         json!({"type":"string","minLength":1,"maxLength":1024}),
     );
     properties.insert(
         "mode".into(),
-        json!({"type":"string","enum":["path","content","title"]}),
+        json!({"type":"string","enum":["name","path","content","title","prompt"]}),
     );
     properties.insert(
         "args".into(),

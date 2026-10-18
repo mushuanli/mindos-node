@@ -137,3 +137,60 @@ async fn rejects_revoked_revisions_and_replaced_directory_identities_before_sear
         "PROJECT_DIRECTORY_CHANGED"
     );
 }
+
+#[tokio::test]
+async fn filters_scoped_results_before_capacity_and_matches_only_basenames_in_name_mode() {
+    let (root, state, project) = fixture().await;
+    let export = root.path().join("export/project");
+    std::fs::create_dir(export.join("needle")).unwrap();
+    std::fs::write(export.join("needle/plain.txt"), "target in scope").unwrap();
+    std::fs::write(export.join("needle.txt"), "target outside").unwrap();
+    // More than one result page outside the directory must not hide an in-scope hit.
+    for i in 0..120 {
+        std::fs::write(export.join(format!("outside-{i}.txt")), "target outside").unwrap();
+    }
+    let scoped = |query: &str, mode: &str, directory: &str| json!({"projectId":project["id"],"revision":project["revision"],"query":query,"mode":mode,"directory":directory});
+    let result = call(
+        &state,
+        0,
+        "project_search",
+        scoped("target", "content", "needle"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(result["matches"][0]["path"], "needle/plain.txt");
+    assert_eq!(result["truncated"], false);
+    assert_eq!(
+        call(
+            &state,
+            0,
+            "project_search",
+            scoped("needle", "name", "needle")
+        )
+        .await
+        .unwrap()["matches"],
+        json!([])
+    );
+    assert_eq!(
+        call(
+            &state,
+            0,
+            "project_search",
+            scoped("needle", "path", "needle")
+        )
+        .await
+        .unwrap()["matches"][0]["path"],
+        "needle/plain.txt"
+    );
+    for directory in ["../private", "/needle", "a//b", "needle/../other", "a\\b"] {
+        assert!(call(
+            &state,
+            0,
+            "project_search",
+            scoped("target", "content", directory)
+        )
+        .await
+        .is_err());
+    }
+}

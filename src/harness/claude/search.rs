@@ -15,16 +15,8 @@ impl Budget {
             || self.bytes >= 16 * 1024 * 1024
             || self.started.elapsed() >= Duration::from_secs(15)
     }
-    fn record(&mut self, session: &Value, item: &Value, query: &str) {
-        let text = if item["type"] == "userMessage" {
-            history::text(&item["content"])
-        } else {
-            item["text"]
-                .as_str()
-                .or(item["commandPreview"].as_str())
-                .unwrap_or("")
-                .into()
-        };
+    fn record(&mut self, session: &Value, item: &Value, query: &str, prompt: bool) {
+        let text = super::super::search::search_text(item, prompt);
         if !self.full() && text.to_lowercase().contains(query) {
             self.matches.push(json!({"sessionId":session["id"],"title":session["title"],"updatedAt":session["updatedAt"],"turnId":item["turnId"],"itemId":item["id"],"summary":text.chars().take(1000).collect::<String>()}));
         }
@@ -35,7 +27,7 @@ pub fn collect(
     runtime: Option<&crate::projects::runtime::ProjectRuntime>,
     entries: Vec<Entry>,
     query: &str,
-    content: bool,
+    mode: &str,
 ) -> Result<Value, Error> {
     let mut budget = Budget {
         matches: Vec::new(),
@@ -48,8 +40,15 @@ pub fn collect(
             budget.truncated = true;
             break;
         }
-        if content {
-            history(config, runtime, &entry, query, &mut budget)?;
+        if mode != "title" {
+            history(
+                config,
+                runtime,
+                &entry,
+                query,
+                mode == "prompt",
+                &mut budget,
+            )?;
         } else if entry.session["title"]
             .as_str()
             .is_some_and(|title| title.to_lowercase().contains(query))
@@ -66,6 +65,7 @@ fn history(
     runtime: Option<&crate::projects::runtime::ProjectRuntime>,
     entry: &Entry,
     query: &str,
+    prompt: bool,
     budget: &mut Budget,
 ) -> Result<(), Error> {
     let mut cursor = Value::Null;
@@ -78,7 +78,7 @@ fn history(
         budget.bytes += page.to_string().len();
         for turn in page["turns"].as_array().unwrap() {
             for item in turn["items"].as_array().unwrap() {
-                budget.record(&entry.session, item, query);
+                budget.record(&entry.session, item, query, prompt);
             }
         }
         cursor = page["nextCursor"].clone();

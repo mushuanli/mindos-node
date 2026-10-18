@@ -84,6 +84,16 @@ async fn sdk_roundtrips_native_history_receipts_approvals_questions_and_interrup
     )
     .await;
     assert_eq!(search["matches"].as_array().unwrap().len(), 1);
+    for (query, count) in [("quoted", 1), ("fixture reply", 0)] {
+        let prompts = call(
+            &service,
+            "harness_session_search",
+            json!({"query":query,"mode":"prompt"}),
+        )
+        .await;
+        assert_eq!(prompts["matches"].as_array().unwrap().len(), count);
+    }
+
     assert_eq!(
         mutate(
             &service,

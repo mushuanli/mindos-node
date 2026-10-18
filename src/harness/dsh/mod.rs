@@ -126,7 +126,7 @@ impl HarnessDriver for Dsh {
         json!({"id":self.config.id,"kind":"dsh","projectRuntime":self.config.projects,
             "workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),
             "capabilities":{"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,
-                "usage":false,"fork":false,"search":false,"rename":true,"archive":true,"unarchive":false,"delete":false,"attachments":[]}})
+                "usage":false,"fork":false,"search":true,"searchPrompts":true,"rename":true,"archive":true,"unarchive":false,"delete":false,"attachments":[]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move { self.read_native(name, args).await })

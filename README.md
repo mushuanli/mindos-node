@@ -254,9 +254,9 @@ MCP 提供 project_roots/list/read/register/configure/exec；harness 工具增�
 
 ### 项目与原生会话搜索
 
-`project_search` 接收 projectId/revision/query/mode（path/content）。发现描述的 fileSearch 仅在隔离执行和 `/usr/bin/rg` 可用时声明；执行使用固定 argv、字面/忽略大小写（支持换行）匹配、只读 pinned 项目视图，无网络和 symlink 跟随，保留嵌套 mount 遮蔽并排除 gitignore、隐藏、私有及原生 home。上限为 100 条、2 MiB 输出/单文件、10 秒、4 并发。无匹配与进程/隔离错误分别返回；取消回收子进程。
+`project_search` 接收 projectId/revision/query/mode（name/path/content）及可选项目相对 directory。发现描述的 fileSearch 仅在隔离执行和 `/usr/bin/rg` 可用时声明；执行使用固定 argv、字面/忽略大小写（支持换行）匹配、只读 pinned 项目视图，无网络和 symlink 跟随，保留嵌套 mount 遮蔽并排除 gitignore、隐藏、私有及原生 home。上限为 100 条、2 MiB 单记录/单文件、16 MiB 扫描输出、10 秒、4 并发；流式解析时先筛选目录再截断结果，超额明确 truncated。fileSearchVersion=2 表示名称与目录范围契约。无匹配与进程/隔离错误分别返回；取消回收子进程。
 
-Codex 声明 capabilities.search，`harness_session_search` 接收 profileId、可选 projectId/revision、query、mode（title/content）、archived。经授权列表和原生历史解析读取用户/assistant 文本与命令摘要，不递归扫描 home。最多 20 页列表、每会话 64 页历史、16 MiB、100 条、15 秒、2 并发。结果携带原生 session/turn/item 身份；超限 truncated=true，当前无续页。状态保留 statusDetails.activeFlags 和最近 turn 结果；notLoaded/未知枚举不推断已经完成，独立 CLI 的可读历史不代表本服务有控制权。
+Codex、Claude Code、DSH 声明 capabilities.search 和 searchPrompts，`harness_session_search` 接收 profileId、可选 projectId/revision、query、mode（title/content/prompt）、archived。经授权列表和原生历史解析读取用户/assistant 文本与命令摘要，不递归扫描 home。最多 20 页列表、每会话 64 页历史、16 MiB、100 条、15 秒、2 并发。结果携带原生 session/turn/item 身份；超限 truncated=true，当前无续页。状态保留 statusDetails.activeFlags 和最近 turn 结果；notLoaded/未知枚举不推断已经完成，独立 CLI 的可读历史不代表本服务有控制权。
 
 
 ### 原生管理与内联附件
@@ -375,3 +375,5 @@ CLI 分为三层：`cli/` 解析参数和显示结果；`admin/` 编排本地管
 每次有效修改先完成完整的目录授权校验，再在配置同目录原子替换，并保留 `config.toml.backup-*.toml` 原始备份；新配置与备份权限均为 0600。合作式编辑锁和提交前的原文件核对拒绝并发覆盖；失败不替换原配置。`--dry-run` 只返回预览，不写文件。顶层注释与其他设置保留，inline 数组可能规范化为 TOML 表。共享移除只移除配置，不删除目录文件；被 grants、harness 或启用中的 sync 引用的身份，以及最后一个身份，不可直接删除。
 
 `access init` 保留稳定身份 `owner`、现有凭据、目录上限和执行权限，补齐项目模式原生 profile 的 `principal_id=owner`。原配置缺少稳定节点 ID 时生成并保存一个；已有 ID 不变。存在旧式、非项目模式 harness workspace 时拒绝迁移，需先显式整理其配置。修改完成返回 `restartRequired: true`；重启后客户端重新发现身份和 grant revision。CLI 不自动重启服务，也不修改项目、会话数据。
+
+`prompt` 只匹配 userMessage；原生 `contentItemKinds` 对齐时排除已知注入上下文，未知来源文本保持可见。DSH 与 Codex 共享有界授权列表/历史分页搜索，Claude Code 保留自身的原生 JSONL 授权解析。新增范围由能力声明协商，不在应用宿主退回读取全部原生历史。

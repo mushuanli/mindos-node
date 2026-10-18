@@ -28,8 +28,9 @@ pub async fn search(state: &Arc<State>, identity: usize, args: Value) -> Result<
         .ok_or_else(Error::invalid)?;
     let mode = args["mode"]
         .as_str()
-        .filter(|m| matches!(*m, "path" | "content"))
+        .filter(|m| matches!(*m, "name" | "path" | "content"))
         .ok_or_else(Error::invalid)?;
+    let directory = directory(&args)?;
     let project = authorized(state, identity, &args)?;
     let mut request = service::request(
         state,
@@ -50,9 +51,12 @@ pub async fn search(state: &Arc<State>, identity: usize, args: Value) -> Result<
     }
     let prepared =
         Bubblewrap { network: false }.prepare_process(&plan, state.execution.lock_handle()?)?;
-    let result = tokio::time::timeout(Duration::from_secs(10), collect(prepared, query, mode))
-        .await
-        .map_err(|_| Error::timed_out())??;
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        collect(prepared, query, mode, directory),
+    )
+    .await
+    .map_err(|_| Error::timed_out())??;
     let current = authorized(state, identity, &args)?;
     if current.root_identity != project.root_identity
         || current.mount_identities != project.mount_identities
@@ -60,6 +64,28 @@ pub async fn search(state: &Arc<State>, identity: usize, args: Value) -> Result<
         return Err(Error::conflict("PROJECT_DIRECTORY_CHANGED"));
     }
     Ok(result)
+}
+fn directory(args: &Value) -> Result<&str, Error> {
+    let path = match args.get("directory") {
+        None => "",
+        Some(value) => value.as_str().ok_or_else(Error::invalid)?,
+    };
+    if path.len() > 4096
+        || path.contains(['\0', '\\'])
+        || !path.is_empty()
+            && path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(Error::invalid());
+    }
+    Ok(path)
+}
+fn in_directory(row: &Value, directory: &str) -> bool {
+    directory.is_empty()
+        || row["path"]
+            .as_str()
+            .is_some_and(|path| path.starts_with(&format!("{directory}/")))
 }
 fn exclude_harness_homes(state: &State, plan: &mut policy::Plan) -> Result<(), Error> {
     use std::os::fd::AsRawFd;
@@ -149,7 +175,7 @@ fn arguments(query: &str, mode: &str) -> Vec<String> {
             format!("!{private}"),
         ]);
     }
-    if mode == "path" {
+    if mode != "content" {
         args.extend([
             "--files".into(),
             "--null".into(),
@@ -171,7 +197,12 @@ fn arguments(query: &str, mode: &str) -> Vec<String> {
     }
     args
 }
-async fn collect(mut prepared: Prepared, query: &str, mode: &str) -> Result<Value, Error> {
+async fn collect(
+    mut prepared: Prepared,
+    query: &str,
+    mode: &str,
+    directory: &str,
+) -> Result<Value, Error> {
     prepared.command.stderr(Stdio::piped());
     let mut child = prepared.command.spawn()?;
     let stderr = child.stderr.take().ok_or_else(Error::internal)?;
@@ -185,6 +216,9 @@ async fn collect(mut prepared: Prepared, query: &str, mode: &str) -> Result<Valu
     });
     let mut stdout = child.stdout.take().ok_or_else(Error::internal)?;
     let mut bytes = Vec::new();
+    let mut matches = Vec::new();
+    let mut scanned = 0usize;
+    let delimiter = if mode == "content" { b'\n' } else { 0 };
     let mut chunk = [0u8; 8192];
     let mut truncated = false;
     loop {
@@ -192,12 +226,24 @@ async fn collect(mut prepared: Prepared, query: &str, mode: &str) -> Result<Valu
         if count == 0 {
             break;
         }
-        if bytes.len() + count > MAX_BYTES {
+        scanned += count;
+        bytes.extend_from_slice(&chunk[..count]);
+        while let Some(end) = bytes.iter().position(|byte| *byte == delimiter) {
+            let record: Vec<_> = bytes.drain(..=end).collect();
+            matches.extend(
+                parse(&record, query, mode)?
+                    .into_iter()
+                    .filter(|row| in_directory(row, directory)),
+            );
+            if matches.len() > MAX_MATCHES {
+                break;
+            }
+        }
+        if scanned > 16 * 1024 * 1024 || bytes.len() > MAX_BYTES || matches.len() > MAX_MATCHES {
             truncated = true;
             child.kill().await?;
             break;
         }
-        bytes.extend_from_slice(&chunk[..count]);
     }
     let status = child.wait().await?;
     let clean = diagnostic.await.map_err(|_| Error::internal())??;
@@ -207,20 +253,26 @@ async fn collect(mut prepared: Prepared, query: &str, mode: &str) -> Result<Valu
     if !truncated && !matches!(status.code(), Some(0 | 1)) {
         return Err(Error::unavailable());
     }
-    let mut matches = parse(&bytes, query, mode)?;
     truncated |= matches.len() > MAX_MATCHES;
     matches.truncate(MAX_MATCHES);
     Ok(json!({"matches":matches,"truncated":truncated,"nextCursor":null}))
 }
 fn parse(bytes: &[u8], query: &str, mode: &str) -> Result<Vec<Value>, Error> {
-    if mode == "path" {
+    if mode != "content" {
         return Ok(bytes
             .split_inclusive(|b| *b == 0)
             .filter(|raw| raw.last() == Some(&0))
             .map(|raw| &raw[..raw.len() - 1])
             .filter_map(|raw| std::str::from_utf8(raw).ok())
-            .filter(|path| path.to_lowercase().contains(&query.to_lowercase()))
             .filter_map(|path| path.strip_prefix("/workspace/"))
+            .filter(|path| {
+                let candidate = if mode == "name" {
+                    path.rsplit('/').next().unwrap_or("")
+                } else {
+                    path
+                };
+                candidate.to_lowercase().contains(&query.to_lowercase())
+            })
             .map(|path| json!({"path":path,"summary":path}))
             .collect());
     }

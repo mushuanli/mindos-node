@@ -316,7 +316,7 @@ impl Claude {
             return Err(Error::invalid());
         }
         let mode = string(args, "mode")?;
-        if !["title", "content"].contains(&mode) {
+        if !["title", "content", "prompt"].contains(&mode) {
             return Err(Error::invalid());
         }
         if args["archived"] == true {
@@ -325,7 +325,7 @@ impl Claude {
         let entries = self.catalog().await?.entries;
         let config = self.config.clone();
         let query = query.to_lowercase();
-        let content = mode == "content";
+        let mode = mode.to_owned();
         let runtime = self.runtime.clone();
         static SEARCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
         let permit = SEARCHES
@@ -333,7 +333,7 @@ impl Claude {
             .map_err(|_| Error::too_many("SEARCH_BUSY"))?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            search::collect(&config, runtime.as_deref(), entries, &query, content)
+            search::collect(&config, runtime.as_deref(), entries, &query, &mode)
         })
         .await
         .map_err(|_| Error::internal())?
@@ -392,7 +392,7 @@ impl Claude {
 impl HarnessDriver for Claude {
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":"claude","workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),"projectRuntime":self.config.projects,
-        "capabilities":{"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
+        "capabilities":{"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"searchPrompts":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {
