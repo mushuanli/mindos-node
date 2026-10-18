@@ -166,6 +166,18 @@ async fn rpc(
         return Json(json!({"type":"server-response","rpcId":body["rpcId"],"result":{"ok":false,"error":error}})).into_response();
     }
     let value = match endpoint.as_str() {
+        "commands/list" => {
+            json!([{"name":"compact","description":"Compact DSH context","input":{"hint":"[focus]"}}])
+        }
+        "commands/execute" => {
+            assert!(state
+                .rows
+                .lock()
+                .unwrap()
+                .contains_key(args["agentId"].as_str().unwrap()));
+            assert_eq!(args["submittedAttachments"], json!([]));
+            json!({"commandId":"native-command","result":{"kind":"success","text":"Context compacted"}})
+        }
         "session/list" => {
             json!({"items":state.rows.lock().unwrap().values().cloned().collect::<Vec<_>>()})
         }
@@ -186,6 +198,10 @@ async fn rpc(
             );
             json!({"sessionId":id})
         }
+        "session/modelCatalog" => {
+            json!({"default":{"provider":"fixture","model":"model"},"routableProviders":["fixture"],"groups":[{"id":"fixture","name":"Fixture","models":[{"id":"model","name":"Model","reasoning":{"efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}],"defaultEffort":"low"}}]}],"failures":[]})
+        }
+        "session/selectModel" => json!({"selected":args["request"]}),
         "session/prompt" => {
             if args["request"]["content"][0]["text"] == "slow-admission" {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;

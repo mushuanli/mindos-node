@@ -31,6 +31,7 @@ pub(super) const SOURCE_KINDS: &[&str] = &[
 ];
 
 pub struct Codex {
+    selections: Mutex<std::collections::BTreeMap<String, Value>>,
     config: ProfileConfig,
     runtime: Option<Arc<crate::projects::runtime::ProjectRuntime>>,
     bridge: Mutex<Option<Arc<Bridge>>>,
@@ -41,6 +42,7 @@ pub struct Codex {
 impl Codex {
     pub fn new(config: ProfileConfig) -> Self {
         Self {
+            selections: Mutex::new(std::collections::BTreeMap::new()),
             config,
             runtime: None,
             bridge: Mutex::new(None),
@@ -77,8 +79,12 @@ impl Codex {
         Ok(bridge)
     }
     async fn read(&self, name: &str, args: Value) -> Result<Value, Error> {
+        if name == "harness_commands" {
+            return Ok(commands::catalog());
+        }
         let bridge = self.bridge().await?;
         match name {
+            "harness_models" => self.models(&bridge, &args).await,
             "harness_session_search" => super::search::search(self, &bridge, &args).await,
             "harness_sessions" => self.sessions(&bridge, &args).await,
             "harness_session_read" => self.history(&bridge, &args).await,
@@ -176,6 +182,7 @@ impl Codex {
                 self.manage(bridge, name, args).await
             }
             "harness_turn" => self.turn(bridge, args).await,
+            "harness_command" => self.command(bridge, args).await,
             "harness_interrupt" => {
                 self.require_owned(string(args, "sessionId")?).await?;
                 bridge.persistent_call("turn/interrupt",json!({"threadId":string(args,"sessionId")?,"turnId":string(args,"turnId")?})).await
@@ -192,6 +199,7 @@ impl Codex {
                 .map_err(|_| Error::internal())?
                 .into(),
         );
+        self.remember_model(&result).await;
         Ok(json!({"session":self.session(&result["thread"])}))
     }
     async fn resume(&self, bridge: &Bridge, args: &Value) -> Result<Value, Error> {
@@ -217,6 +225,7 @@ impl Codex {
         let cwd = translated.as_deref().unwrap_or(cwd);
         let result = bridge.persistent_call("thread/resume",json!({"threadId":id,"cwd":cwd,"excludeTurns":true,"approvalPolicy":"on-request","sandbox":if self.runtime.is_some(){"danger-full-access"}else{"workspace-write"}})).await?;
         self.owned.lock().await.insert(id.into());
+        self.remember_model(&result).await;
         Ok(json!({"session":self.session(&result["thread"])}))
     }
     pub(super) async fn require_owned(&self, id: &str) -> Result<(), Error> {
@@ -233,18 +242,18 @@ impl Codex {
             return Err(Error::invalid());
         }
         let input = super::attachments::input(prompt, &args["attachments"])?;
+        let params = self.turn_params(bridge, args, json!(input)).await?;
         let operation = string(args, "requestId")?;
         if let Some(runtime) = &self.runtime {
             runtime.begin(id, operation)?;
         }
-        let result = bridge
-            .persistent_call("turn/start", json!({"threadId":id,"input":input}))
-            .await;
+        let result = bridge.persistent_call("turn/start", params.clone()).await;
         if let (Err(error), Some(runtime)) = (&result, &self.runtime) {
             runtime.submission_failed(id, operation, error);
         }
         let result = result?;
         let turn = string(&result["turn"], "id").map_err(|_| Error::internal())?;
+        self.remember_turn_model(id, &params).await;
         if let Some(runtime) = &self.runtime {
             runtime.bind_turn(id, operation, turn);
         }
@@ -528,7 +537,7 @@ impl HarnessDriver for Codex {
         json!({"id":self.config.id,"kind":self.config.kind,
             "workspaces":self.config.workspaces.iter().map(|w| json!({"id":w.id})).collect::<Vec<_>>(),
             "projectRuntime":self.config.projects,
-            "capabilities":{"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"fork":true,"search":true,"searchPrompts":true,"rename":true,"archive":true,"unarchive":true,"delete":true,"attachments":["text","image"]}})
+            "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"fork":true,"search":true,"searchPrompts":true,"rename":true,"archive":true,"unarchive":true,"delete":true,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move { self.read(name, args).await })
@@ -554,3 +563,5 @@ impl HarnessDriver for Codex {
         })
     }
 }
+mod commands;
+mod models;

@@ -26,7 +26,9 @@ for line in sys.stdin:
         emit({'method': 'serverRequest/resolved', 'params': {'threadId': 'session-1', 'requestId': request['id']}})
         continue
     result = {}
-    if method == 'thread/start':
+    if method == 'model/list':
+        result = {'data': [{'id': 'fixture-model', 'model': 'fixture-model', 'displayName': 'Fixture model', 'isDefault': True, 'defaultReasoningEffort': 'medium', 'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}, {'reasoningEffort': 'high'}]}], 'nextCursor': None}
+    elif method == 'thread/start':
         if params.get('sandbox') != ('danger-full-access' if os.environ.get('PI_AGENT_PROJECT') else 'workspace-write'):
             emit({'id': request['id'], 'error': {'code': -32602, 'message': 'sandbox'}})
             continue
@@ -64,7 +66,14 @@ for line in sys.stdin:
         for thread_id in deleted:
             threads.pop(thread_id, None)
             emit({'method': 'thread/deleted', 'params': {'threadId': thread_id}})
+    elif method == 'thread/compact/start':
+        threads[params['threadId']]['compacted'] = True
+    elif method == 'review/start':
+        assert params['delivery'] == 'inline'
+        result = {'reviewThreadId':params['threadId'],'turn':{'id':'review-turn'}}
     elif method == 'turn/start':
+        if params['input'][0]['text'] == 'check-model-selection':
+            assert params['model'] == 'fixture-model' and params['effort'] == 'high'
         turn_count += 1
         turn_id = 'turn-' + str(turn_count)
         result = {'turn': {'id': turn_id}}

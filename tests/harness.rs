@@ -52,6 +52,81 @@ async fn mutate(service: &Harnesses, name: &str, id: &str, extra: Value) -> Valu
 }
 
 #[tokio::test]
+async fn models_are_discovered_and_validated_before_native_turn_submission() {
+    let root = tempfile::tempdir().unwrap();
+    let service = service(root.path());
+    let catalog = service
+        .call("harness_models", json!({"profileId":"codex"}))
+        .await
+        .unwrap();
+    assert_eq!(catalog["models"][0]["reasoningEfforts"][1]["id"], "high");
+    let created = mutate(
+        &service,
+        "harness_create",
+        "model-create",
+        json!({"workspaceId":"project"}),
+    )
+    .await;
+    let id = &created["result"]["session"]["id"];
+    let rejected = mutate(&service,"harness_turn","bad-effort",json!({"sessionId":id,"prompt":"check-model-selection","selection":{"modelId":"fixture-model","reasoningEffort":"invalid"}})).await;
+    assert_eq!(rejected["outcome"], "not-committed");
+    let accepted = mutate(&service,"harness_turn","model-turn",json!({"sessionId":id,"prompt":"check-model-selection","selection":{"modelId":"fixture-model","reasoningEffort":"high"}})).await;
+    assert_eq!(accepted["outcome"], "committed");
+    let current = service
+        .call(
+            "harness_models",
+            json!({"profileId":"codex","sessionId":id}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(current["current"]["reasoningEffort"], "high");
+    service.close().await;
+}
+
+#[tokio::test]
+async fn codex_commands_use_native_controls_and_keep_receipts() {
+    let root = tempfile::tempdir().unwrap();
+    let service = service(root.path());
+    let catalog = service
+        .call("harness_commands", json!({"profileId":"codex"}))
+        .await
+        .unwrap();
+    assert_eq!(catalog["commands"][0]["name"], "compact");
+    let created = mutate(
+        &service,
+        "harness_create",
+        "command-create",
+        json!({"workspaceId":"project"}),
+    )
+    .await;
+    let id = &created["result"]["session"]["id"];
+    let args = json!({"sessionId":id,"command":"compact"});
+    let accepted = mutate(&service, "harness_command", "compact-once", args.clone()).await;
+    assert_eq!(accepted["outcome"], "committed");
+    assert_eq!(
+        accepted,
+        mutate(&service, "harness_command", "compact-once", args).await
+    );
+    let review = mutate(
+        &service,
+        "harness_command",
+        "review",
+        json!({"sessionId":id,"command":"review","arguments":"check types"}),
+    )
+    .await;
+    assert_eq!(review["result"]["turnId"], "review-turn");
+    let rejected = mutate(
+        &service,
+        "harness_command",
+        "not-native",
+        json!({"sessionId":id,"command":"theme"}),
+    )
+    .await;
+    assert_eq!(rejected["outcome"], "not-committed");
+    service.close().await;
+}
+
+#[tokio::test]
 async fn creates_reads_resumes_streams_approves_and_interrupts_without_replay() {
     let root = tempfile::tempdir().unwrap();
     let service = service(root.path());

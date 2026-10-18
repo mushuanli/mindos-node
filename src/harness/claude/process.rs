@@ -25,6 +25,8 @@ struct Command {
     reply: Reply,
 }
 pub struct Process {
+    pub models: Arc<Mutex<Value>>,
+    pub commands: Arc<Mutex<Value>>,
     sender: mpsc::Sender<Command>,
     pub session: Arc<Mutex<Value>>,
     pub items: Arc<Mutex<Vec<Value>>>,
@@ -32,6 +34,8 @@ pub struct Process {
     exited: watch::Receiver<bool>,
 }
 pub(super) struct Context {
+    pub models: Arc<Mutex<Value>>,
+    pub commands: Arc<Mutex<Value>>,
     pub id: String,
     pub turn: String,
     pub stream: String,
@@ -48,8 +52,12 @@ impl Context {
         events: Arc<Mutex<Events>>,
         session: Arc<Mutex<Value>>,
         items: Arc<Mutex<Vec<Value>>>,
+        commands: Arc<Mutex<Value>>,
+        models: Arc<Mutex<Value>>,
     ) -> Self {
         Self {
+            models,
+            commands,
             id,
             turn: String::new(),
             stream: String::new(),
@@ -86,18 +94,27 @@ impl Process {
     ) -> Result<Arc<Self>, Error> {
         let child = launch(config, &runtime, &session, resume.as_deref())?;
         let process = Self::supervise(child, session, events, runtime)?;
-        if let Err(error) = process.control(json!({"subtype":"initialize"})).await {
+        if let Err(error) = process.initialize().await {
             process.drain().await;
             return Err(error);
         }
         Ok(process)
     }
+    async fn initialize(&self) -> Result<(), Error> {
+        let value = self.control(json!({"subtype":"initialize"})).await?;
+        *self.commands.lock().unwrap() = super::commands::catalog(&value["commands"]);
+        if value["models"].is_array() {
+            *self.models.lock().unwrap() = super::models::catalog(&value["models"])?;
+        }
+        Ok(())
+    }
     fn supervise(
         mut child: Child,
-        session: Value,
+        mut session: Value,
         events: Arc<Mutex<Events>>,
         runtime: Option<Arc<ProjectRuntime>>,
     ) -> Result<Arc<Self>, Error> {
+        session["permissionMode"] = json!("manual");
         let input = child.stdin.take().ok_or_else(Error::internal)?;
         let output = child.stdout.take().ok_or_else(Error::internal)?;
         let (sender, receiver) = mpsc::channel(128);
@@ -107,13 +124,22 @@ impl Process {
             .ok_or_else(Error::invalid)?
             .to_owned();
         let process = Arc::new(Self {
+            models: Arc::new(Mutex::new(json!({"models":[]}))),
+            commands: Arc::new(Mutex::new(json!([]))),
             sender,
             session: Arc::new(Mutex::new(session)),
             items: Arc::new(Mutex::new(Vec::new())),
             stop: CancellationToken::new(),
             exited,
         });
-        let context = Context::new(id, events, process.session.clone(), process.items.clone());
+        let context = Context::new(
+            id,
+            events,
+            process.session.clone(),
+            process.items.clone(),
+            process.commands.clone(),
+            process.models.clone(),
+        );
         let stop = process.stop.clone();
         tokio::spawn(async move {
             supervise(child, input, output, receiver, context, stop, runtime).await;
@@ -210,7 +236,10 @@ fn launch(
     session: &Value,
     resume: Option<&str>,
 ) -> Result<Child, Error> {
-    let args = arguments(session["id"].as_str().ok_or_else(Error::invalid)?, resume);
+    let mut args = arguments(session["id"].as_str().ok_or_else(Error::invalid)?, resume);
+    if session["catalogOnly"] == true {
+        args.push("--no-session-persistence".into());
+    }
     let mut prepared = runtime
         .as_ref()
         .map(|r| r.prepare(config, args.clone()))

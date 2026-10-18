@@ -377,3 +377,24 @@ CLI 分为三层：`cli/` 解析参数和显示结果；`admin/` 编排本地管
 `access init` 保留稳定身份 `owner`、现有凭据、目录上限和执行权限，补齐项目模式原生 profile 的 `principal_id=owner`。原配置缺少稳定节点 ID 时生成并保存一个；已有 ID 不变。存在旧式、非项目模式 harness workspace 时拒绝迁移，需先显式整理其配置。修改完成返回 `restartRequired: true`；重启后客户端重新发现身份和 grant revision。CLI 不自动重启服务，也不修改项目、会话数据。
 
 `prompt` 只匹配 userMessage；原生 `contentItemKinds` 对齐时排除已知注入上下文，未知来源文本保持可见。DSH 与 Codex 共享有界授权列表/历史分页搜索，Claude Code 保留自身的原生 JSONL 授权解析。新增范围由能力声明协商，不在应用宿主退回读取全部原生历史。
+
+## Native harness slash commands
+
+`harness_profiles` advertises `capabilities.slashCommands`. `harness_commands` takes the selected `profileId` and optional `sessionId`, returning a bounded `commands` list with `name`, `description`, `argumentHint`, and `kind` (`prompt` or `action`). Catalog reads do not create a conversation or adopt native execution. Session-dependent catalogs appear after native initialization.
+
+`harness_command` takes `profileId`, `sessionId`, `command`, optional string `arguments`, plus the existing `epoch` and `requestId`. Project calls retain `projectId` and `revision`. It uses the same authorization, mutation serialization and receipt lookup as other harness writes; unknown results must be reconciled, never replayed with a new request ID. Commands may return no turn, a `turnId`, or a native `commandId` with `output` and `failed`. A committed command with a failed handler remains a committed operation.
+
+- Claude: discover the initialized SDK command list, including project/plugin commands and aliases. Cold sessions use a short-lived, nonpersistent SDK process in their verified working directory without adopting the session. Compact and its aliases are actions and may complete without a user-message echo; other prompt commands dispatch the exact slash input. Interactive-terminal-only commands are not synthesized.
+- Codex: expose `/compact` through `thread/compact/start` and `/review [instructions]` through inline `review/start`. Other terminal UI commands are not forwarded as ordinary prompts.
+- DSH: discover `commands/list` for the authorized agent and call `commands/execute`. Native command/run and command/done records retain their command identity in history.
+
+Adding another harness uses its driver-owned catalog and dispatch; the gateway and UI do not maintain a global list of command names.
+
+
+### Native models and reasoning
+
+Profiles advertise `capabilities.models`. Read `harness_models` with `profileId` and optional authorized `sessionId` to obtain `models: [{id, label, reasoningEfforts: [{id, label}], defaultReasoningEffort?}]`, optional `default`, and known `current` selections. Selection IDs are opaque to clients. Missing current metadata does not imply a default was applied. Codex discovery follows bounded native model-list pagination; DSH includes routable providers only; Claude uses SDK model metadata and does not invent effort levels.
+
+Pass `selection: {modelId, reasoningEffort?}` with `harness_turn`. The adapter checks that the model and effort belong together before submitting the prompt. Codex passes model/effort to turn/start; Claude applies set_model and session-only apply_flag_settings before the user frame; DSH applies session/selectModel before session/prompt. The entire operation retains normal requestId/epoch receipts and session serialization. Settings changes do not write user or project configuration files. An unknown result must be reconciled, never automatically replayed.
+
+Claude model discovery without a live session initializes a short-lived SDK process using --no-session-persistence, reads metadata, and drains the process without sending a prompt. Prompt-kind slash commands may carry a selection; native action commands retain their own configuration semantics and reject an explicit selection override.

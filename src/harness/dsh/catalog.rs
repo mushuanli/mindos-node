@@ -113,6 +113,8 @@ impl Dsh {
     pub(super) async fn read_native(&self, name: &str, args: Value) -> Result<Value, Error> {
         let client = self.client().await?;
         match name {
+            "harness_models" => self.models(&client, &args).await,
+            "harness_commands" => self.commands(&client, &args).await,
             "harness_sessions" => self.list(&client, &args).await,
             "harness_session_info" => {
                 Ok(json!({"session":self.summary(&client,string(&args,"sessionId")?).await?}))

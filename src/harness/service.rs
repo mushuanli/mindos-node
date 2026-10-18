@@ -373,6 +373,7 @@ fn is_mutation(name: &str) -> bool {
             | "harness_unarchive"
             | "harness_delete"
             | "harness_turn"
+            | "harness_command"
             | "harness_interrupt"
             | "harness_respond"
     )

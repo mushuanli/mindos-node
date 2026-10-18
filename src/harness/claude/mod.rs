@@ -1,5 +1,8 @@
 //! Claude Code's SDK transport and JSONL history, independent of Codex's app-server.
+mod commands;
+mod discovery;
 mod history;
+mod models;
 mod process;
 mod protocol;
 mod search;
@@ -25,6 +28,7 @@ use std::{
 };
 static READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 pub struct Claude {
+    discovery: tokio::sync::Mutex<BTreeMap<String, Value>>,
     config: ProfileConfig,
     runtime: Option<Arc<ProjectRuntime>>,
     sessions: sessions::Sessions,
@@ -43,6 +47,7 @@ impl Claude {
         let mut events = Events::new();
         events.runtime = runtime.clone();
         Self {
+            discovery: tokio::sync::Mutex::new(BTreeMap::new()),
             config,
             runtime,
             sessions: sessions::Sessions::default(),
@@ -280,7 +285,11 @@ impl Claude {
             runtime.begin(id, &turn)?;
             runtime.bind_turn(id, &turn, &turn);
         }
-        let result = process.turn(&turn, content).await;
+        let result = async {
+            self.select_model(&process, args).await?;
+            process.turn(&turn, content).await
+        }
+        .await;
         if let (Err(error), Some(runtime)) = (&result, &self.runtime) {
             runtime.submission_failed(id, &turn, error);
         }
@@ -349,6 +358,8 @@ impl Claude {
     }
     async fn read_command(&self, name: &str, args: &Value) -> Result<Value, Error> {
         match name {
+            "harness_models" => self.models(args).await,
+            "harness_commands" => self.commands(args).await,
             "harness_sessions" => self.list(args).await,
             "harness_session_read" => self.read_history(args).await,
             "harness_session_usage" => self.usage(args).await,
@@ -376,6 +387,7 @@ impl Claude {
                     .await
             }
             "harness_turn" => self.turn(args).await,
+            "harness_command" => self.command(args).await,
             "harness_respond" => self.respond(args).await,
             "harness_interrupt" => self.interrupt(args).await,
             _ => Err(Error::unsupported()),
@@ -392,7 +404,7 @@ impl Claude {
 impl HarnessDriver for Claude {
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":"claude","workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),"projectRuntime":self.config.projects,
-        "capabilities":{"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"searchPrompts":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
+        "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"searchPrompts":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {

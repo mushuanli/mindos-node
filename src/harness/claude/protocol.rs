@@ -4,6 +4,22 @@ use crate::core::error::Error;
 use serde_json::{json, Value};
 pub fn consume(context: &mut Context, frame: Value) -> Result<(), Error> {
     match frame["type"].as_str() {
+        Some("system") if frame["subtype"] == "init" => {
+            current_model(context, &frame);
+            let commands = super::commands::refresh(
+                &context.commands.lock().unwrap(),
+                &frame["slash_commands"],
+            );
+            *context.commands.lock().unwrap() = commands.clone();
+            if frame["permissionMode"].is_string() {
+                context.session.lock().unwrap()["permissionMode"] = frame["permissionMode"].clone();
+            }
+            push(
+                context,
+                "harness/commands/updated",
+                json!({"threadId":context.id,"commands":commands}),
+            )
+        }
         Some("user") if frame["parent_tool_use_id"].is_null() => acknowledge(context, &frame),
         Some("assistant") if frame["parent_tool_use_id"].is_null() => assistant(context, &frame),
         Some("result") => complete(context, &frame),
@@ -11,6 +27,30 @@ pub fn consume(context: &mut Context, frame: Value) -> Result<(), Error> {
         Some("control_cancel_request") => resolve(context, &frame["request_id"]),
         Some("stream_event") if frame["parent_tool_use_id"].is_null() => delta(context, &frame),
         _ => Ok(()),
+    }
+}
+fn current_model(context: &Context, frame: &Value) {
+    let Some(model) = frame["model"].as_str() else {
+        return;
+    };
+    let mut catalog = context.models.lock().unwrap();
+    let id = catalog["models"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row["id"] == model || row["resolvedModel"] == model)
+        })
+        .map(|row| row["id"].clone());
+    if let Some(id) = id {
+        let mut current = if catalog["current"]["modelId"] == id {
+            catalog["current"].clone()
+        } else {
+            json!({"modelId":id})
+        };
+        if frame["effort"].is_string() {
+            current["reasoningEffort"] = frame["effort"].clone();
+        }
+        catalog["current"] = current;
     }
 }
 fn push(context: &Context, method: &str, params: Value) -> Result<(), Error> {
@@ -121,6 +161,10 @@ pub fn item(block: &Value, id: &str, turn: &str) -> Option<Value> {
     super::super::presentation::item(&value)
 }
 fn complete(context: &mut Context, frame: &Value) -> Result<(), Error> {
+    // Native control-like commands may finish without echoing a user frame.
+    if let Some(reply) = context.pending.remove(&context.turn) {
+        let _ = reply.send(Ok(json!({"turnId":context.turn})));
+    }
     let mut session = context.session.lock().unwrap();
     session["status"] = json!("idle");
     session["activeTurnId"] = Value::Null;

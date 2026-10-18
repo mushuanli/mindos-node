@@ -53,6 +53,94 @@ async fn events(service: &Harnesses) -> Value {
         .await
         .unwrap()
 }
+
+#[tokio::test]
+async fn model_routes_and_efforts_are_forwarded_before_prompt_admission() {
+    let root = tempfile::tempdir().unwrap();
+    let host = fixture::Host::new(root.path()).await;
+    let service = service(root.path(), &host.url);
+    let catalog = service
+        .call(
+            "harness_models",
+            json!({"profileId":"dsh","sessionId":"existing"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(catalog["models"][0]["reasoningEfforts"][1]["id"], "high");
+    mutate(
+        &service,
+        "harness_resume",
+        "model-resume",
+        json!({"sessionId":"existing"}),
+    )
+    .await;
+    let bad = mutate(&service,"harness_turn","bad-model",json!({"sessionId":"existing","prompt":"check-model-selection","selection":{"modelId":catalog["models"][0]["id"],"reasoningEffort":"invalid"}})).await;
+    assert_eq!(bad["outcome"], "not-committed");
+    let accepted = mutate(&service,"harness_turn","model-turn",json!({"sessionId":"existing","prompt":"check-model-selection","selection":{"modelId":catalog["models"][0]["id"],"reasoningEffort":"high"}})).await;
+    assert_eq!(accepted["outcome"], "committed");
+    let calls = host.state.calls.lock().unwrap();
+    let selected = calls
+        .iter()
+        .position(|call| call["method"] == "session/selectModel")
+        .unwrap();
+    let prompted = calls
+        .iter()
+        .position(|call| call["method"] == "session/prompt")
+        .unwrap();
+    assert!(selected < prompted);
+    assert_eq!(
+        calls[selected]["payload"]["args"]["request"]["provider"],
+        "fixture"
+    );
+    assert_eq!(
+        calls[selected]["payload"]["args"]["request"]["reasoningEffort"],
+        "high"
+    );
+    drop(calls);
+    service.close().await;
+}
+#[tokio::test]
+async fn native_slash_commands_are_discovered_and_executed_without_prompting() {
+    let root = tempfile::tempdir().unwrap();
+    let host = fixture::Host::new(root.path()).await;
+    let service = service(root.path(), &host.url);
+    let catalog = service
+        .call(
+            "harness_commands",
+            json!({"profileId":"dsh","sessionId":"existing"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(catalog["commands"][0]["name"], "compact");
+    assert_eq!(catalog["commands"][0]["kind"], "action");
+    mutate(
+        &service,
+        "harness_resume",
+        "resume-command",
+        json!({"sessionId":"existing"}),
+    )
+    .await;
+    let args = json!({"sessionId":"existing","command":"compact","arguments":"keep decisions"});
+    let result = mutate(&service, "harness_command", "compact-once", args.clone()).await;
+    assert_eq!(result["outcome"], "committed");
+    assert_eq!(result["result"]["output"], "Context compacted");
+    assert_eq!(
+        result,
+        mutate(&service, "harness_command", "compact-once", args).await
+    );
+    let calls = host.state.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "commands/execute")
+            .count(),
+        1
+    );
+    assert!(!calls.iter().any(|call| call["method"] == "session/prompt"));
+    drop(calls);
+    service.close().await;
+}
+
 #[tokio::test]
 async fn creates_resumes_streams_and_answers_approvals_using_native_receipts() {
     let root = tempfile::tempdir().unwrap();

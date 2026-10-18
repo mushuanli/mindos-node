@@ -1,5 +1,38 @@
 use pi_agent::{config::Config, harness::Harnesses};
 use serde_json::{json, Value};
+
+#[tokio::test]
+async fn native_models_configure_the_session_before_sending_input() {
+    let root = tempfile::tempdir().unwrap();
+    let service = fixture(root.path());
+    let catalog = call(&service, "harness_models", json!({})).await;
+    assert_eq!(catalog["models"][0]["reasoningEfforts"][1]["id"], "high");
+    assert_eq!(
+        call(&service, "harness_sessions", json!({})).await["sessions"],
+        json!([])
+    );
+    let created = mutate(
+        &service,
+        "harness_create",
+        "model-create",
+        json!({"workspaceId":"workspace"}),
+    )
+    .await;
+    let id = &created["result"]["session"]["id"];
+    let bad = mutate(
+        &service,
+        "harness_turn",
+        "bad-model",
+        json!({"sessionId":id,"prompt":"check-model-selection","selection":{"modelId":"unknown"}}),
+    )
+    .await;
+    assert_eq!(bad["outcome"], "not-committed");
+    let accepted = mutate(&service,"harness_turn","model-turn",json!({"sessionId":id,"prompt":"check-model-selection","selection":{"modelId":"fixture-model","reasoningEffort":"high"}})).await;
+    assert_eq!(accepted["outcome"], "committed");
+    let current = call(&service, "harness_models", json!({"sessionId":id})).await;
+    assert_eq!(current["current"]["reasoningEffort"], "high");
+    service.close().await;
+}
 use std::os::unix::fs::{symlink, PermissionsExt};
 fn fixture(root: &std::path::Path) -> Harnesses {
     let script = root.join("claude-fixture.py");
@@ -40,6 +73,96 @@ async fn idle(service: &Harnesses, id: &Value) {
     }
     panic!("turn did not complete");
 }
+#[tokio::test]
+async fn native_command_catalog_and_dispatch_are_session_scoped_and_receipted() {
+    let root = tempfile::tempdir().unwrap();
+    let service = fixture(root.path());
+    let cold = call(&service, "harness_commands", json!({})).await;
+    assert!(cold["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["name"] == "verify"));
+    assert_eq!(
+        call(&service, "harness_sessions", json!({})).await["sessions"],
+        json!([])
+    );
+    let created = mutate(
+        &service,
+        "harness_create",
+        "command-create",
+        json!({"workspaceId":"workspace"}),
+    )
+    .await;
+    let id = &created["result"]["session"]["id"];
+    let catalog = call(&service, "harness_commands", json!({"sessionId":id})).await;
+    let rows = catalog["commands"].as_array().unwrap();
+    assert!(rows
+        .iter()
+        .any(|row| row["name"] == "team:verify" && row["kind"] == "prompt"));
+    assert!(rows
+        .iter()
+        .any(|row| row["name"] == "verify" && row["kind"] == "prompt"));
+    assert!(rows
+        .iter()
+        .any(|row| row["name"] == "compact" && row["kind"] == "action"));
+    assert!(rows
+        .iter()
+        .any(|row| row["name"] == "condense" && row["kind"] == "action"));
+    let args = json!({"sessionId":id,"command":"team:verify","arguments":"src"});
+    let accepted = mutate(&service, "harness_command", "verify-once", args.clone()).await;
+    assert_eq!(accepted["outcome"], "committed");
+    assert_eq!(
+        mutate(&service, "harness_command", "verify-once", args).await,
+        accepted
+    );
+    idle(&service, id).await;
+    let history = call(&service, "harness_session_read", json!({"sessionId":id})).await;
+    assert!(history.to_string().contains("/team:verify src"));
+    let alias = mutate(
+        &service,
+        "harness_command",
+        "verify-alias",
+        json!({"sessionId":id,"command":"verify","arguments":"tests"}),
+    )
+    .await;
+    assert_eq!(alias["outcome"], "committed");
+    idle(&service, id).await;
+    assert!(
+        call(&service, "harness_session_read", json!({"sessionId":id}))
+            .await
+            .to_string()
+            .contains("/verify tests")
+    );
+    let compact = mutate(
+        &service,
+        "harness_command",
+        "compact-alias",
+        json!({"sessionId":id,"command":"condense"}),
+    )
+    .await;
+    assert_eq!(compact["outcome"], "committed");
+    assert!(compact["result"]["turnId"].is_string());
+    idle(&service, id).await;
+    assert!(
+        !call(&service, "harness_session_read", json!({"sessionId":id}))
+            .await
+            .to_string()
+            .contains("/condense")
+    );
+    assert_eq!(
+        mutate(
+            &service,
+            "harness_command",
+            "not-native",
+            json!({"sessionId":id,"command":"quit"})
+        )
+        .await["outcome"],
+        "not-committed"
+    );
+    service.close().await;
+}
+
 #[tokio::test]
 async fn sdk_roundtrips_native_history_receipts_approvals_questions_and_interruption() {
     let root = tempfile::tempdir().unwrap();
@@ -271,6 +394,18 @@ async fn native_pages_preserve_turn_identity_and_resume_uses_verified_transcript
     .unwrap();
     let session = call(&service, "harness_session_info", json!({"sessionId":id})).await;
     assert_eq!(session["session"]["owned"], false);
+    let before = std::fs::read(&path).unwrap();
+    let commands = call(&service, "harness_commands", json!({"sessionId":id})).await;
+    assert!(commands["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["name"] == "verify"));
+    assert_eq!(
+        call(&service, "harness_session_info", json!({"sessionId":id})).await["session"]["owned"],
+        false
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
     let mut cursor = Value::Null;
     let mut seen = std::collections::BTreeSet::new();
     loop {

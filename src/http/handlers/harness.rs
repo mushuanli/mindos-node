@@ -352,6 +352,9 @@ fn tools() -> Vec<Value> {
             "Submit a message to a session owned by this gateway",
             vec!["profileId", "epoch", "requestId", "sessionId", "prompt"],
         ),
+        ("harness_models", "Read native models and per-model reasoning capabilities", vec!["profileId"]),
+        ("harness_commands", "Read commands exposed by the selected native harness session", vec!["profileId"]),
+        ("harness_command", "Execute an advertised native command with the existing mutation receipt contract", vec!["profileId", "epoch", "requestId", "sessionId", "command"]),
         (
             "harness_interrupt",
             "Interrupt a turn owned by this gateway",
@@ -426,6 +429,10 @@ fn tool(name: &str, description: &str, required: Vec<&str>) -> Value {
     }
     properties.insert("name".into(), json!({"type":"string"}));
     properties.insert(
+        "arguments".into(),
+        json!({"type":"string","maxLength":131072}),
+    );
+    properties.insert(
         "directory".into(),
         json!({"type":"string","maxLength":4096}),
     );
@@ -453,10 +460,11 @@ fn tool(name: &str, description: &str, required: Vec<&str>) -> Value {
         json!({"type":["string","integer"]}),
     );
     properties.insert("response".into(), json!({"type":"object"}));
+    properties.insert("selection".into(),json!({"type":"object","required":["modelId"],"properties":{"modelId":{"type":"string","minLength":1,"maxLength":1024},"reasoningEffort":{"type":"string","minLength":1,"maxLength":128}},"additionalProperties":false}));
     properties.insert("watchId".into(), json!({"type":"string","maxLength":128}));
     properties.insert("attachments".into(), json!({"type":"array","maxItems":5,"items":{"type":"object","required":["kind","name","content"],"properties":{"kind":{"enum":["text","image"]},"name":{"type":"string","maxLength":256},"content":{"type":"string","maxLength":524288},"mimeType":{"type":"string"}},"additionalProperties":false}}));
     json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required},
-        "annotations":{"readOnlyHint":matches!(name,"harness_session_usage"|"harness_session_search"|"project_watch"|"project_unwatch"|"project_search"|"project_sync_directories"|"project_sync_compare"|"project_sync_status"|"piagent_capabilities"|"fsagent_capabilities"|"project_roots"|"project_list"|"project_read"|"harness_profiles"|"harness_sessions"|"harness_session_read"|"harness_session_info"|"harness_events"|"harness_operation"),
+        "annotations":{"readOnlyHint":matches!(name,"harness_models"|"harness_commands"|"harness_session_usage"|"harness_session_search"|"project_watch"|"project_unwatch"|"project_search"|"project_sync_directories"|"project_sync_compare"|"project_sync_status"|"piagent_capabilities"|"fsagent_capabilities"|"project_roots"|"project_list"|"project_read"|"harness_profiles"|"harness_sessions"|"harness_session_read"|"harness_session_info"|"harness_events"|"harness_operation"),
         "openWorldHint":true}})
 }
 

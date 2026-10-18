@@ -1,6 +1,25 @@
 //! Pure DSH durable-record and assistant-stream projection into harness envelopes.
 use serde_json::{json, Value};
 
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    #[test]
+    fn command_history_keeps_native_identity_and_result_separate_from_model_messages() {
+        let items = history_records(
+            &[
+                json!({"event":{"seq":1,"type":"command/run","data":{"commandId":"c","name":"compact"}}}),
+                json!({"event":{"seq":2,"type":"command/done","data":{"commandId":"c","kind":"success","text":"Compacted"}}}),
+            ],
+            "s",
+        );
+        assert_eq!(items[0]["id"], "command:c");
+        assert_eq!(items[1]["id"], "command:c");
+        assert_eq!(items[1]["text"], "Compacted");
+        assert_eq!(items[1]["type"], "systemMessage");
+    }
+}
+
 #[derive(Default)]
 pub struct Cursor {
     pub seq: Option<u64>,
@@ -9,6 +28,7 @@ pub struct Cursor {
     pub interrupted: bool,
     pub native_turn: Option<u64>,
     pub(super) tools: std::collections::BTreeMap<String, Value>,
+    pub(super) commands: std::collections::BTreeMap<String, String>,
 }
 pub fn session(row: &Value, owned: bool, archived: bool) -> Value {
     let title = &row["projections"]["values"]["title"];
@@ -16,6 +36,7 @@ pub fn session(row: &Value, owned: bool, archived: bool) -> Value {
         "cwd":row["cwd"],"status":if row["running"]==true{"active"}else{"idle"},
         "createdAt":row["createdAt"],"updatedAt":row["updatedAt"],"parentSessionId":row["parentSessionId"],
         "owned":owned,"resumable":!archived,"forkable":false,"archived":archived,
+        "modelSelection":row["modelSelection"],
         "archiveAllowed":!archived && row["running"] != true})
 }
 pub fn history_records(records: &[Value], session: &str) -> Vec<Value> {
@@ -45,6 +66,27 @@ fn record_items(event: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value>
         return vec![];
     }
     cursor.seq = Some(seq);
+    if matches!(event["type"].as_str(), Some("command/run" | "command/done")) {
+        let data = &event["data"];
+        let Some(id) = data["commandId"].as_str() else {
+            return vec![];
+        };
+        let running = event["type"] == "command/run";
+        if running {
+            cursor.commands.insert(
+                id.into(),
+                format!("/{}", data["name"].as_str().unwrap_or("")),
+            );
+        }
+        let name = if running {
+            cursor.commands.get(id).cloned()
+        } else {
+            cursor.commands.remove(id)
+        };
+        return vec![json!({"id":format!("command:{id}"),"type":"systemMessage",
+            "text":data["text"].as_str().map(str::to_owned).or(name).unwrap_or_else(||"Command".into()),
+            "status":if running {"running"} else if data["kind"]=="error" {"failed"} else {"completed"}})];
+    }
     if event["type"] == "turn/start" {
         cursor.native_turn = event["data"]["turn"].as_u64();
         if cursor.turn.is_empty() {

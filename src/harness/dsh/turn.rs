@@ -16,13 +16,17 @@ impl Dsh {
         }
         let operation = string(args, "requestId")?;
         self.begin(id, operation, &live)?;
-        let result = client
-            .call(
-                "session/prompt",
-                json!({"request":{"sessionId":id,"requestId":operation,
+        let result = async {
+            self.select_model(client, args).await?;
+            client
+                .call(
+                    "session/prompt",
+                    json!({"request":{"sessionId":id,"requestId":operation,
             "mode":"queue","content":[{"type":"text","text":prompt}]}}),
-            )
-            .await;
+                )
+                .await
+        }
+        .await;
         self.admission(id, operation, &live, result)
     }
     fn begin(&self, id: &str, operation: &str, live: &Live) -> Result<(), Error> {
@@ -76,6 +80,7 @@ impl Dsh {
                 .await
             }
             "harness_turn" => self.turn(&client, args).await,
+            "harness_command" => self.command(&client, args).await,
             "harness_interrupt" => self.interrupt(&client, args).await,
             "harness_respond" => {
                 interactions::respond(&client, &self.sessions, &self.events, args).await
