@@ -175,7 +175,7 @@ fn capabilities(state: &State, identity: usize) -> Value {
         "fileProtocol":"fs-agent-http-v1","harness":state.harness.enabled() && client.has_harness(),
         "projects":state.projects.is_some() && !client.anonymous(),"sync":state.sync.as_ref().is_some_and(|s|client.legacy() || s.principal_id() == client.id()),
         "directorySync":state.projects.is_some() && state.sync.as_ref().is_some_and(|s|client.legacy() || s.principal_id() == client.id()),
-        "fileWatch":state.projects.is_some(),"fileSearchVersion":2,"fileSearch":state.projects.is_some() && state.execution.ready() && std::path::Path::new("/usr/bin/rg").is_file(),"directorySyncVersion":2,"projectProtocol":"fs-agent-project-v1"})
+        "fileWatch":state.projects.is_some(),"fileSearchVersion":2,"searchKeywords":true,"fileSearch":state.projects.is_some() && state.execution.ready() && std::path::Path::new("/usr/bin/rg").is_file(),"directorySyncVersion":2,"projectProtocol":"fs-agent-project-v1"})
 }
 
 fn tools() -> Vec<Value> {

@@ -1,6 +1,9 @@
 //! One parsed-history budget shared by all matching native sessions.
 use super::history::{self, Entry};
-use crate::{core::error::Error, harness::config::ProfileConfig};
+use crate::{
+    core::{error::Error, search::KeywordQuery},
+    harness::config::ProfileConfig,
+};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 struct Budget {
@@ -15,9 +18,9 @@ impl Budget {
             || self.bytes >= 16 * 1024 * 1024
             || self.started.elapsed() >= Duration::from_secs(15)
     }
-    fn record(&mut self, session: &Value, item: &Value, query: &str, prompt: bool) {
+    fn record(&mut self, session: &Value, item: &Value, query: &KeywordQuery, prompt: bool) {
         let text = super::super::search::search_text(item, prompt);
-        if !self.full() && text.to_lowercase().contains(query) {
+        if !self.full() && query.matches(&text) {
             self.matches.push(json!({"sessionId":session["id"],"title":session["title"],"updatedAt":session["updatedAt"],"turnId":item["turnId"],"itemId":item["id"],"summary":text.chars().take(1000).collect::<String>()}));
         }
     }
@@ -35,6 +38,7 @@ pub fn collect(
         started: Instant::now(),
         truncated: false,
     };
+    let query = KeywordQuery::new(query);
     for entry in entries {
         if budget.full() {
             budget.truncated = true;
@@ -45,13 +49,13 @@ pub fn collect(
                 config,
                 runtime,
                 &entry,
-                query,
+                &query,
                 mode == "prompt",
                 &mut budget,
             )?;
         } else if entry.session["title"]
             .as_str()
-            .is_some_and(|title| title.to_lowercase().contains(query))
+            .is_some_and(|title| query.matches(title))
         {
             budget.matches.push(json!({"sessionId":entry.session["id"],"title":entry.session["title"],"updatedAt":entry.session["updatedAt"],"summary":entry.session["title"]}));
         }
@@ -64,7 +68,7 @@ fn history(
     config: &ProfileConfig,
     runtime: Option<&crate::projects::runtime::ProjectRuntime>,
     entry: &Entry,
-    query: &str,
+    query: &KeywordQuery,
     prompt: bool,
     budget: &mut Budget,
 ) -> Result<(), Error> {

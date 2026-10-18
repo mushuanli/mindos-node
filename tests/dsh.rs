@@ -545,10 +545,11 @@ async fn searches_authorized_titles_and_prompts_beyond_loaded_history_pages() {
         service.profiles()["profiles"][0]["capabilities"]["searchPrompts"],
         true
     );
-    for (query, mode) in [
-        ("Older session", "title"),
-        ("message 0", "prompt"),
-        ("message 0", "content"),
+    for (query, mode, count) in [
+        ("session　OLDER", "title", 1),
+        ("0 message", "prompt", 25),
+        ("0 message", "content", 25),
+        ("message absent", "content", 0),
     ] {
         let result = service
             .call(
@@ -557,8 +558,14 @@ async fn searches_authorized_titles_and_prompts_beyond_loaded_history_pages() {
             )
             .await
             .unwrap();
-        assert_eq!(result["matches"].as_array().unwrap().len(), 1, "{result}");
-        assert_eq!(result["matches"][0]["sessionId"], "existing");
+        assert_eq!(
+            result["matches"].as_array().unwrap().len(),
+            count,
+            "{result}"
+        );
+        if count > 0 {
+            assert_eq!(result["matches"][0]["sessionId"], "existing");
+        }
         assert_eq!(result["truncated"], false);
     }
     assert!(host

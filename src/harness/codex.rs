@@ -537,7 +537,7 @@ impl HarnessDriver for Codex {
         json!({"id":self.config.id,"kind":self.config.kind,
             "workspaces":self.config.workspaces.iter().map(|w| json!({"id":w.id})).collect::<Vec<_>>(),
             "projectRuntime":self.config.projects,
-            "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"fork":true,"search":true,"searchPrompts":true,"rename":true,"archive":true,"unarchive":true,"delete":true,"attachments":["text","image"]}})
+            "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"fork":true,"search":true,"searchPrompts":true,"searchKeywords":true,"rename":true,"archive":true,"unarchive":true,"delete":true,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move { self.read(name, args).await })

@@ -1,6 +1,6 @@
 //! Searches parsed, authorized native history instead of scanning an entire harness home.
 use super::{bridge::Bridge, codex::Codex};
-use crate::core::error::Error;
+use crate::core::{error::Error, search::KeywordQuery};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::{collections::HashSet, time::Duration};
@@ -33,14 +33,14 @@ pub(super) async fn search_with<'a>(
         .ok_or_else(Error::invalid)?;
     tokio::time::timeout(
         Duration::from_secs(15),
-        collect(args, query, mode, list, history),
+        collect(args, &KeywordQuery::new(query), mode, list, history),
     )
     .await
     .map_err(|_| Error::timed_out())?
 }
 async fn collect<'a>(
     args: &Value,
-    query: &str,
+    query: &KeywordQuery,
     mode: &str,
     mut list: impl FnMut(Value) -> BoxFuture<'a, Result<Value, Error>>,
     mut history: impl FnMut(Value) -> BoxFuture<'a, Result<Value, Error>>,
@@ -58,7 +58,7 @@ async fn collect<'a>(
             if mode == "title" {
                 if session["title"]
                     .as_str()
-                    .is_some_and(|title| title.to_lowercase().contains(&query.to_lowercase()))
+                    .is_some_and(|title| query.matches(title))
                 {
                     matches.push(json!({"sessionId":session["id"],"title":session["title"],"summary":session["title"],"updatedAt":session["updatedAt"]}));
                 }
@@ -98,7 +98,7 @@ async fn search_history<'a>(
     history: &mut impl FnMut(Value) -> BoxFuture<'a, Result<Value, Error>>,
     args: &Value,
     session: &Value,
-    query: &str,
+    query: &KeywordQuery,
     mode: &str,
     matches: &mut Vec<Value>,
     bytes: &mut usize,
@@ -119,11 +119,11 @@ async fn search_history<'a>(
         for turn in page["turns"].as_array().ok_or_else(Error::internal)? {
             for item in turn["items"].as_array().into_iter().flatten() {
                 let text = search_text(item, mode == "prompt");
-                if !text.to_lowercase().contains(&query.to_lowercase()) {
+                if !query.matches(&text) {
                     continue;
                 }
                 matches.push(json!({"sessionId":session["id"],"title":session["title"],"updatedAt":session["updatedAt"],
-                    "turnId":if item["turnId"].is_string() {&item["turnId"]} else {&turn["id"]},"itemId":item["id"],"summary":excerpt(&text, query)}));
+                    "turnId":if item["turnId"].is_string() {&item["turnId"]} else {&turn["id"]},"itemId":item["id"],"summary":excerpt(&text, query.anchor())}));
                 if matches.len() >= 100 {
                     *truncated = true;
                     return Ok(());

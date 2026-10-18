@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     app::State,
-    core::error::Error,
+    core::{error::Error, search::KeywordQuery},
     process::{policy, sandbox::Prepared},
 };
 use serde_json::{json, Value};
@@ -31,13 +31,14 @@ pub async fn search(state: &Arc<State>, identity: usize, args: Value) -> Result<
         .filter(|m| matches!(*m, "name" | "path" | "content"))
         .ok_or_else(Error::invalid)?;
     let directory = directory(&args)?;
+    let query = KeywordQuery::new(query);
     let scope = scope_rules(directory);
     let project = authorized(state, identity, &args)?;
     let mut request = service::request(
         state,
         &project,
         "/usr/bin/rg".into(),
-        arguments(query, mode, scope.is_some()),
+        arguments(&query, mode, scope.is_some()),
         10_000,
     );
     request.read_only = true;
@@ -54,7 +55,7 @@ pub async fn search(state: &Arc<State>, identity: usize, args: Value) -> Result<
         Bubblewrap { network: false }.prepare_process(&plan, state.execution.lock_handle()?)?;
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        collect(prepared, query, mode, directory, scope),
+        collect(prepared, &query, mode, directory, scope),
     )
     .await
     .map_err(|_| Error::timed_out())??;
@@ -179,7 +180,7 @@ fn authorized(state: &State, identity: usize, args: &Value) -> Result<Project, E
     }
     Ok(project)
 }
-fn arguments(query: &str, mode: &str, scoped: bool) -> Vec<String> {
+fn arguments(query: &KeywordQuery, mode: &str, scoped: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "--no-config",
         "--no-require-git",
@@ -220,15 +221,17 @@ fn arguments(query: &str, mode: &str, scoped: bool) -> Vec<String> {
             "/workspace".into(),
         ]);
     } else {
+        // Count accepted AND matches in the collector, not single-keyword candidates.
+        if !query.multiple() {
+            args.extend(["--max-count".into(), "100".into()]);
+        }
         args.extend([
             "--json".into(),
             "--multiline".into(),
             "--fixed-strings".into(),
             "--ignore-case".into(),
-            "--max-count".into(),
-            "100".into(),
             "--".into(),
-            query.into(),
+            query.anchor().into(),
             "/workspace".into(),
         ]);
     }
@@ -236,7 +239,7 @@ fn arguments(query: &str, mode: &str, scoped: bool) -> Vec<String> {
 }
 async fn collect(
     mut prepared: Prepared,
-    query: &str,
+    query: &KeywordQuery,
     mode: &str,
     directory: &str,
     scope: Option<String>,
@@ -302,7 +305,7 @@ async fn collect(
     matches.truncate(MAX_MATCHES);
     Ok(json!({"matches":matches,"truncated":truncated,"nextCursor":null}))
 }
-fn parse(bytes: &[u8], query: &str, mode: &str) -> Result<Vec<Value>, Error> {
+fn parse(bytes: &[u8], query: &KeywordQuery, mode: &str) -> Result<Vec<Value>, Error> {
     if mode != "content" {
         return Ok(bytes
             .split_inclusive(|b| *b == 0)
@@ -316,7 +319,7 @@ fn parse(bytes: &[u8], query: &str, mode: &str) -> Result<Vec<Value>, Error> {
                 } else {
                     path
                 };
-                candidate.to_lowercase().contains(&query.to_lowercase())
+                query.matches(candidate)
             })
             .map(|path| json!({"path":path,"summary":path}))
             .collect());
@@ -335,7 +338,7 @@ fn parse(bytes: &[u8], query: &str, mode: &str) -> Result<Vec<Value>, Error> {
             .and_then(|p| p.strip_prefix("/workspace/"))
             .ok_or_else(Error::invalid)?;
         let text = data["lines"]["text"].as_str().unwrap_or("");
-        if text.contains('\0') {
+        if text.contains('\0') || !query.matches(text) {
             continue;
         }
         matches.push(json!({"path":path,"line":data["line_number"],"summary":text.chars().take(500).collect::<String>()}));
@@ -362,20 +365,28 @@ mod tests {
         ] {
             assert!(scope_rules(directory).is_none());
         }
-        let args = arguments("needle", "content", true);
+        let args = arguments(&KeywordQuery::new("needle"), "content", true);
         let ignore = args.iter().position(|arg| arg == "--ignore-file").unwrap();
         assert_eq!(args[ignore + 1], "/dev/stdin");
     }
     #[test]
     fn literal_arguments_and_newline_paths_are_structured() {
-        let args = arguments("-e $(secret)", "content", false);
+        let args = arguments(&KeywordQuery::new("-e $(secret)"), "content", false);
         let index = args.iter().position(|arg| arg == "--").unwrap();
-        assert_eq!(args[index + 1], "-e $(secret)");
+        assert_eq!(args[index + 1], "$(secret)");
+        assert!(!args.iter().any(|arg| arg == "--max-count"));
         assert!(!args.iter().any(|arg| arg == "--follow"));
-        let rows = parse(b"/workspace/a\nb\0/workspace/other\0", "a\nb", "path").unwrap();
+        let rows = parse(
+            b"/workspace/a\nb\0/workspace/other\0",
+            &KeywordQuery::new("a\nb"),
+            "path",
+        )
+        .unwrap();
         assert_eq!(rows[0]["path"], "a\nb");
-        assert!(parse(b"/workspace/partial", "partial", "path")
-            .unwrap()
-            .is_empty());
+        assert!(
+            parse(b"/workspace/partial", &KeywordQuery::new("partial"), "path")
+                .unwrap()
+                .is_empty()
+        );
     }
 }

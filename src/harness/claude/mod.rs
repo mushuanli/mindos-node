@@ -404,7 +404,7 @@ impl Claude {
 impl HarnessDriver for Claude {
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":"claude","workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),"projectRuntime":self.config.projects,
-        "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"searchPrompts":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
+        "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"searchPrompts":true,"searchKeywords":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {

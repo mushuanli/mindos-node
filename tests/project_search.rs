@@ -91,6 +91,49 @@ async fn scoped_search(
     .await
 }
 #[tokio::test]
+async fn keyword_and_search_filters_before_result_limits_and_keeps_names_distinct_from_paths() {
+    let (root, state, project, _guard) = fixture().await;
+    let directory = root.path().join("export/project/Alpha");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(
+        directory.join("Beta-a.*.txt"),
+        "longest-only\n".repeat(150) + "SECOND longest-only 中文\nlongest-only\nSECOND",
+    )
+    .unwrap();
+    let names = search(&state, &project, "a.*　BETA beta", "name")
+        .await
+        .unwrap();
+    assert_eq!(names["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(names["matches"][0]["path"], "Alpha/Beta-a.*.txt");
+    assert_eq!(
+        search(&state, &project, "beta Alpha", "name")
+            .await
+            .unwrap()["matches"],
+        json!([])
+    );
+    assert_eq!(
+        search(&state, &project, "beta\tALPHA", "path")
+            .await
+            .unwrap()["matches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let content = search(&state, &project, "second longest-only 中文", "content")
+        .await
+        .unwrap();
+    assert_eq!(content["matches"].as_array().unwrap().len(), 1, "{content}");
+    assert_eq!(content["matches"][0]["line"], 151);
+    assert_eq!(content["truncated"], false);
+    assert_eq!(
+        search(&state, &project, "second absent", "content")
+            .await
+            .unwrap()["matches"],
+        json!([])
+    );
+}
+#[tokio::test]
 async fn searches_only_the_readonly_project_view_and_applies_ignore_and_private_policies() {
     let (root, state, project, _guard) = fixture().await;
     let export = root.path().join("export/project");
