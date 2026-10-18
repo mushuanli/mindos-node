@@ -256,6 +256,8 @@ MCP 提供 project_roots/list/read/register/configure/exec；harness 工具增�
 
 `project_search` 接收 projectId/revision/query/mode（name/path/content）及可选项目相对 directory。发现描述的 fileSearch 仅在隔离执行和 `/usr/bin/rg` 可用时声明；执行使用固定 argv、字面/忽略大小写（支持换行）匹配、只读 pinned 项目视图，无网络和 symlink 跟随，保留嵌套 mount 遮蔽并排除 gitignore、隐藏、私有及原生 home。上限为 100 条、2 MiB 单记录/单文件、16 MiB 扫描输出、10 秒、4 并发；流式解析时先筛选目录再截断结果，超额明确 truncated。fileSearchVersion=2 表示名称与目录范围契约。无匹配与进程/隔离错误分别返回；取消回收子进程。
 
+目录范围通过 rg 的 `--ignore-file /dev/stdin` 在遍历阶段剪枝，规则随标准输入传入，不落盘、不经过 Shell，也不引入 fd。保留 `/workspace` 为遍历根，避免显式目录参数绕过隐藏、忽略或链接策略；项目自有忽略规则仍优先，输出再次校验目录范围。名称中的通配符按字面转义；隐藏目录、含换行的目录或规则超过 2 MiB 时保留原有遍历与结果过滤。rg 自行选择线程数，查询数量仍由四个工作槽限制。
+
 Codex、Claude Code、DSH 声明 capabilities.search 和 searchPrompts，`harness_session_search` 接收 profileId、可选 projectId/revision、query、mode（title/content/prompt）、archived。经授权列表和原生历史解析读取用户/assistant 文本与命令摘要，不递归扫描 home。最多 20 页列表、每会话 64 页历史、16 MiB、100 条、15 秒、2 并发。结果携带原生 session/turn/item 身份；超限 truncated=true，当前无续页。状态保留 statusDetails.activeFlags 和最近 turn 结果；notLoaded/未知枚举不推断已经完成，独立 CLI 的可读历史不代表本服务有控制权。
 
 

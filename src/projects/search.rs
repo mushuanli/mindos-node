@@ -11,7 +11,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{process::Stdio, sync::Arc, time::Duration};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MATCHES: usize = 100;
@@ -31,12 +31,13 @@ pub async fn search(state: &Arc<State>, identity: usize, args: Value) -> Result<
         .filter(|m| matches!(*m, "name" | "path" | "content"))
         .ok_or_else(Error::invalid)?;
     let directory = directory(&args)?;
+    let scope = scope_rules(directory);
     let project = authorized(state, identity, &args)?;
     let mut request = service::request(
         state,
         &project,
         "/usr/bin/rg".into(),
-        arguments(query, mode),
+        arguments(query, mode, scope.is_some()),
         10_000,
     );
     request.read_only = true;
@@ -53,7 +54,7 @@ pub async fn search(state: &Arc<State>, identity: usize, args: Value) -> Result<
         Bubblewrap { network: false }.prepare_process(&plan, state.execution.lock_handle()?)?;
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        collect(prepared, query, mode, directory),
+        collect(prepared, query, mode, directory, scope),
     )
     .await
     .map_err(|_| Error::timed_out())??;
@@ -86,6 +87,39 @@ fn in_directory(row: &Value, directory: &str) -> bool {
         || row["path"]
             .as_str()
             .is_some_and(|path| path.starts_with(&format!("{directory}/")))
+}
+/// Prune sibling trees without turning the selected directory into an explicit rg root.
+/// Explicit roots bypass ignore/hidden filtering and can follow root symlinks.
+fn scope_rules(directory: &str) -> Option<String> {
+    if directory.is_empty()
+        || directory.contains(['\n', '\r'])
+        || directory.split('/').any(|part| part.starts_with('.'))
+    {
+        return None;
+    }
+    let mut rules = String::new();
+    let mut parent = String::new();
+    for part in directory.split('/') {
+        let escaped = escape_scope_component(part);
+        rules.push_str(&format!("/{parent}*\n!/{parent}{escaped}/\n"));
+        parent.push_str(&escaped);
+        parent.push('/');
+        if rules.len() > MAX_BYTES {
+            return None;
+        }
+    }
+    Some(rules)
+}
+fn escape_scope_component(part: &str) -> String {
+    part.chars()
+        .flat_map(|c| {
+            if "\\*?[]{}!# ".contains(c) {
+                vec!['\\', c]
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
 }
 fn exclude_harness_homes(state: &State, plan: &mut policy::Plan) -> Result<(), Error> {
     use std::os::fd::AsRawFd;
@@ -145,7 +179,7 @@ fn authorized(state: &State, identity: usize, args: &Value) -> Result<Project, E
     }
     Ok(project)
 }
-fn arguments(query: &str, mode: &str) -> Vec<String> {
+fn arguments(query: &str, mode: &str, scoped: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "--no-config",
         "--no-require-git",
@@ -157,6 +191,9 @@ fn arguments(query: &str, mode: &str) -> Vec<String> {
     ]
     .map(String::from)
     .into();
+    if scoped {
+        args.extend(["--ignore-file".into(), "/dev/stdin".into()]);
+    }
     for private in [
         ".git",
         ".codex",
@@ -202,9 +239,17 @@ async fn collect(
     query: &str,
     mode: &str,
     directory: &str,
+    scope: Option<String>,
 ) -> Result<Value, Error> {
     prepared.command.stderr(Stdio::piped());
+    if scope.is_some() {
+        prepared.command.stdin(Stdio::piped());
+    }
     let mut child = prepared.command.spawn()?;
+    if let Some(rules) = scope {
+        let mut stdin = child.stdin.take().ok_or_else(Error::internal)?;
+        stdin.write_all(rules.as_bytes()).await?;
+    }
     let stderr = child.stderr.take().ok_or_else(Error::internal)?;
     let diagnostic = tokio::spawn(async move {
         let mut bytes = Vec::new();
@@ -302,8 +347,28 @@ fn parse(bytes: &[u8], query: &str, mode: &str) -> Result<Vec<Value>, Error> {
 mod tests {
     use super::*;
     #[test]
+    fn scoped_walk_rules_keep_ancestor_ignore_precedence_and_literal_paths() {
+        assert_eq!(
+            scope_rules("selected/deep").unwrap(),
+            "/*\n!/selected/\n/selected/*\n!/selected/deep/\n"
+        );
+        assert_eq!(scope_rules("[ab] ").unwrap(), "/*\n!/\\[ab\\]\\ /\n");
+        for directory in [
+            "",
+            ".hidden",
+            "parent/.hidden",
+            "line\nbreak",
+            "line\rbreak",
+        ] {
+            assert!(scope_rules(directory).is_none());
+        }
+        let args = arguments("needle", "content", true);
+        let ignore = args.iter().position(|arg| arg == "--ignore-file").unwrap();
+        assert_eq!(args[ignore + 1], "/dev/stdin");
+    }
+    #[test]
     fn literal_arguments_and_newline_paths_are_structured() {
-        let args = arguments("-e $(secret)", "content");
+        let args = arguments("-e $(secret)", "content", false);
         let index = args.iter().position(|arg| arg == "--").unwrap();
         assert_eq!(args[index + 1], "-e $(secret)");
         assert!(!args.iter().any(|arg| arg == "--follow"));
