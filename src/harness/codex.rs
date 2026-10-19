@@ -463,7 +463,7 @@ impl Codex {
                 .await
             {
                 Ok(full) => {
-                    json!({"turns":full["thread"]["turns"],"nextCursor":null,"eventCursor":full["_piAgentEventCursor"]})
+                    json!({"turns":full["thread"]["turns"],"nextCursor":null,"eventCursor":full["_mindosNodeEventCursor"]})
                 }
                 Err(error) if error.code == "HARNESS_HISTORY_PENDING" => {
                     json!({"turns":[],"nextCursor":null})

@@ -1,7 +1,7 @@
 #[allow(dead_code)]
 #[path = "common/directory_acl.rs"]
 mod support;
-use pi_agent::{app::State, projects};
+use mindos_node::{app::State, projects};
 use serde_json::{json, Value};
 use std::{path::Path, sync::Arc};
 
@@ -26,7 +26,7 @@ fn configured() -> (tempfile::TempDir, Arc<State>) {
     let template = include_str!("../profiles/claude.example.toml")
         .replace("/home/USER/.claude", home.to_str().unwrap())
         .replace("principal_id = \"owner\"", "principal_id = \"alice\"");
-    let parsed: pi_agent::config::Config =
+    let parsed: mindos_node::config::Config =
         toml::from_str(&format!("listen='127.0.0.1:0'\n{template}")).unwrap();
     let mut config = support::config(root.path(), false);
     config.harnesses = parsed.harnesses;

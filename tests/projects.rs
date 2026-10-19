@@ -1,4 +1,4 @@
-use pi_agent::{
+use mindos_node::{
     app::State,
     config::Config,
     projects::{call, runtime::ProjectRuntime},
@@ -65,7 +65,7 @@ async fn source_aliases_refuse_runtime_paths_without_changing_default_namespaces
         .unwrap();
     let runtime = ProjectRuntime::new(&state, 0, stored);
     state.execution.accept();
-    let mut profile = pi_agent::harness::config::validate(&config)
+    let mut profile = mindos_node::harness::config::validate(&config)
         .unwrap()
         .remove(0);
     profile.command = "/bin/true".into();
@@ -79,7 +79,7 @@ async fn remount(
     state: &Arc<State>,
     project: &Value,
     access: &str,
-) -> Result<Value, pi_agent::core::error::Error> {
+) -> Result<Value, mindos_node::core::error::Error> {
     call(
         state,
         0,
@@ -229,7 +229,7 @@ async fn replacement_does_not_silently_retarget_projects_and_launcher_contains_o
     let runtime = ProjectRuntime::new(&state, 0, stored);
     let fixture = root.path().join("codex-native");
     std::fs::write(&fixture, "executable").unwrap();
-    let mut profile = pi_agent::harness::config::validate(&config)
+    let mut profile = mindos_node::harness::config::validate(&config)
         .unwrap()
         .remove(0);
     profile.command = fixture.to_str().unwrap().into();
@@ -318,7 +318,7 @@ async fn native_project_bash_and_codex_share_directory_grants() {
         fixture.to_str().unwrap().into()
     };
     let state = State::from_config(&config).unwrap();
-    pi_agent::process::enable(&state).await.unwrap();
+    mindos_node::process::enable(&state).await.unwrap();
     let project = register(&state, "group/existing", false).await;
     let id = project["id"].as_str().unwrap();
     let configured=call(&state,0,"project_configure",json!({"projectId":id,"revision":1,"name":"Notes","mounts":[{"alias":"reference","path":"","at":"/workspace/ref","access":"ro"}]})).await.unwrap()["project"].clone();
@@ -326,7 +326,7 @@ async fn native_project_bash_and_codex_share_directory_grants() {
     let started=call(&state,0,"project_exec",json!({"projectId":id,"revision":2,"epoch":state.execution.epoch(),"requestId":"bash","command":"/bin/bash","args":["-c","set -eu; test $(pwd) = /workspace; cat ref/guide; test ! -e /etc/passwd; if echo x > ref/guide 2>/dev/null; then exit 7; fi; echo project > note"],"timeoutMs":5000})).await.unwrap();
     assert!(started["process"].is_object());
     let result = loop {
-        let result = pi_agent::process::status(&state, 0, state.execution.epoch(), "bash").unwrap();
+        let result = mindos_node::process::status(&state, 0, state.execution.epoch(), "bash").unwrap();
         if result.state != "running" {
             break result;
         }

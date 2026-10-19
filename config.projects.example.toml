@@ -1,10 +1,10 @@
 listen = "127.0.0.1:8787"
 server_id = "office-node"
 execution = true
-api_key_env = "PI_AGENT_API_KEY"
+api_key_env = "MINDOS_NODE_API_KEY"
 
 [projects]
-root = "/var/lib/pi-agent/projects"
+root = "/var/lib/mindos-node/projects"
 network = false
 
 [[exports]]
@@ -21,10 +21,10 @@ access = "ro"
 id = "codex"
 kind = "codex"
 command = "/opt/codex/codex"
-home = "/var/lib/pi-agent/codex"
+home = "/var/lib/mindos-node/codex"
 projects = true
 
 # Enable to materialize uploaded files datasets into writable project directories.
 [sync]
 enabled = true
-root = "/var/lib/pi-agent/sync"
+root = "/var/lib/mindos-node/sync"

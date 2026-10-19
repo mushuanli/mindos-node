@@ -3,7 +3,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use pi_agent::{app::State, projects};
+use mindos_node::{app::State, projects};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 #[allow(dead_code)]
@@ -130,7 +130,7 @@ async fn write_grants_do_not_imply_execution_and_anonymous_cannot_allocate_proje
         .header("x-operation-id", "acl-write-1")
         .body(Body::from("created"))
         .unwrap();
-    let response = pi_agent::router(state.clone(), &[])
+    let response = mindos_node::router(state.clone(), &[])
         .unwrap()
         .oneshot(req)
         .await
@@ -169,7 +169,7 @@ async fn stale_authorization_and_forged_identity_are_rejected_before_access() {
             .header(header, value)
             .body(Body::empty())
             .unwrap();
-        let response = pi_agent::router(state.clone(), &[])
+        let response = mindos_node::router(state.clone(), &[])
             .unwrap()
             .oneshot(req)
             .await
@@ -226,7 +226,7 @@ fn rejects_unknown_subjects_duplicate_credentials_and_privilege_escalation() {
         match mutation {
             0 => c.exports[0].grants[0].principal = "missing".into(),
             1 => c.principals[1].token = Some(ALICE.into()),
-            2 => c.exports[0].access = pi_agent::config::Access::Ro,
+            2 => c.exports[0].access = mindos_node::config::Access::Ro,
             _ => c.principals[0].id = "anonymous".into(),
         }
         assert!(State::from_config(&c).is_err());
@@ -249,7 +249,7 @@ async fn downgrading_a_writer_preserves_reads_and_projects_without_keeping_old_w
     let before = state.auth.client(alice).authorization();
     drop(state);
     let mut c = config(root.path(), false);
-    c.exports[0].grants[0].access = pi_agent::config::Access::Ro;
+    c.exports[0].grants[0].access = mindos_node::config::Access::Ro;
     let state = State::from_config(&c).unwrap();
     let alice = state.auth.index("alice").unwrap();
     let read = projects::call(
@@ -355,7 +355,7 @@ async fn legacy_numeric_project_owners_migrate_to_owner_without_accepting_other_
     let catalog = root.path().join("catalog/projects.json");
     let mut image: Value = serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
     image["projects"][p["id"].as_str().unwrap()]["owner"] = json!(0);
-    let _: pi_agent::projects::model::Project =
+    let _: mindos_node::projects::model::Project =
         serde_json::from_value(image["projects"][p["id"].as_str().unwrap()].clone()).unwrap();
     std::fs::write(&catalog, serde_json::to_vec(&image).unwrap()).unwrap();
     let state = State::from_config(&c).unwrap();
@@ -379,7 +379,7 @@ async fn revoked_write_permission_cannot_be_reused_by_a_persisted_directory_sync
     let (root, state) = fixture();
     drop(state);
     let mut c = config(root.path(), false);
-    c.sync = Some(pi_agent::sync::Config {
+    c.sync = Some(mindos_node::sync::Config {
         enabled: true,
         root: root.path().join("sync"),
         principal_id: "alice".into(),
@@ -397,7 +397,7 @@ async fn revoked_write_permission_cannot_be_reused_by_a_persisted_directory_sync
     .unwrap()["project"]
         .clone();
     drop(state);
-    c.exports[0].grants[0].access = pi_agent::config::Access::Ro;
+    c.exports[0].grants[0].access = mindos_node::config::Access::Ro;
     let state = State::from_config(&c).unwrap();
     let result = projects::call(
         &state,

@@ -1,5 +1,5 @@
 use axum::http::StatusCode;
-use pi_agent::{app::State, projects};
+use mindos_node::{app::State, projects};
 use serde_json::json;
 #[allow(dead_code)]
 #[path = "common/directory_acl.rs"]
@@ -17,11 +17,11 @@ async fn explicit_execution_grant_allows_a_readonly_native_session_without_file_
     std::fs::set_permissions(&peer, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut c = config(root.path(), false);
     c.execution = true;
-    c.exports[0].grants[0].access = pi_agent::config::Access::Ro;
+    c.exports[0].grants[0].access = mindos_node::config::Access::Ro;
     c.exports[0].grants[0].execute = true;
     c.harnesses=vec![toml::from_str(&format!("id='model'\nkind='codex'\nprincipal_id='alice'\nprojects=true\ncommand={peer:?}\nhome={home:?}")).unwrap()];
     let state = State::from_config(&c).unwrap();
-    pi_agent::process::enable(&state).await.unwrap();
+    mindos_node::process::enable(&state).await.unwrap();
     let who = state.auth.index("alice").unwrap();
     let project = projects::call(
         &state,
@@ -81,10 +81,10 @@ async fn execution_permission_does_not_make_a_readonly_directory_writable_in_the
     drop(state);
     let mut c = config(root.path(), false);
     c.execution = true;
-    c.exports[0].grants[0].access = pi_agent::config::Access::Ro;
+    c.exports[0].grants[0].access = mindos_node::config::Access::Ro;
     c.exports[0].grants[0].execute = true;
     let state = State::from_config(&c).unwrap();
-    pi_agent::process::enable(&state).await.unwrap();
+    mindos_node::process::enable(&state).await.unwrap();
     let who = state.auth.index("alice").unwrap();
     let p = projects::call(
         &state,
@@ -99,7 +99,7 @@ async fn execution_permission_does_not_make_a_readonly_directory_writable_in_the
     let result = tokio::time::timeout(std::time::Duration::from_secs(7), async {
         loop {
             let status =
-                pi_agent::process::status(&state, who, state.execution.epoch(), "ro-shell")
+                mindos_node::process::status(&state, who, state.execution.epoch(), "ro-shell")
                     .unwrap();
             if status.state != "running" {
                 break status;

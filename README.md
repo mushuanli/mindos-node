@@ -1,18 +1,18 @@
-# pi-agent — MindOS 的个人智能节点
+# mindos-node — MindOS 的个人智能节点
 
-pi-agent 将设备上的文件、项目和执行环境接入 MindOS，统一提供同步、受控访问及 AI harness 会话管理。MindOS 组织知识、对话和工作流，pi-agent 连接设备上的数据与执行能力。PI 表示 Personal Information（个人信息）。
+mindos-node 将设备上的文件、项目和执行环境接入 MindOS，统一提供同步、受控访问及 AI harness 会话管理。MindOS 组织知识、对话和工作流，mindos-node 连接设备上的数据与执行能力。
 
-服务源码：[pi-agent](https://github.com/mushuanli/pi-agent)；统一客户端：[piagent-driver](https://github.com/mushuanli/piagent-driver)，npm 包为 `@itookit/piagent-driver`。
+服务源码：[mindos-node](https://github.com/mushuanli/mindos-node)；统一客户端：[mindos-node-client](https://github.com/mushuanli/piagent-driver)，npm 包为 `@itookit/mindos-node-client`。
 
 服务端目前支持 Linux（需要 `openat2`）；Web、Tauri 和 Node CLI 使用同一 HTTP 协议。服务启动时验证目录句柄能力，不支持时拒绝启动。
 
 ```bash
-# 在本项目根目录执行（itookit monorepo 内即 tools/pi-agent，作为 submodule）
+# 在本项目根目录执行（itookit monorepo 内即 tools/mindos-node，作为 submodule）
 cargo build --release
 # 复制 config.example.toml，设置实际目录、监听地址和允许的 Web/Tauri Origin。
-export PI_AGENT_API_KEY='替换为至少24字节的API-Key'
-target/release/pi-agent                     # 自动读取 config.toml
-target/release/pi-agent /path/to/config.toml # 也可显式指定
+export MINDOS_NODE_API_KEY='替换为至少24字节的API-Key'
+target/release/mindos-node                     # 自动读取 config.toml
+target/release/mindos-node /path/to/config.toml # 也可显式指定
 ```
 
 文件模式配置一组认证凭据和一串导出目录；可额外启用外部 harness 控制：
@@ -21,7 +21,7 @@ target/release/pi-agent /path/to/config.toml # 也可显式指定
 listen = "127.0.0.1:8787"
 allowed_origins = ["http://localhost:3000", "http://localhost:1420"]
 
-api_key_env = "PI_AGENT_API_KEY"      # 也可内联 api_key = "至少24字节"
+api_key_env = "MINDOS_NODE_API_KEY"      # 也可内联 api_key = "至少24字节"
 
 [[exports]]
 path = "/n/prj/x1"                   # 别名默认取目录名：x1
@@ -43,7 +43,7 @@ access = "rw"                        # 默认 ro；rw 自动加独占锁
 
 `exclusive` 要求所有修改经本服务完成；目录上的 advisory lock 阻止合作的同根实例，不能阻止编辑器、Git 或其他外部程序。配置内拒绝重叠根与重复别名；不同实例的父子导出根仍需部署侧禁止。共享修改目录使用 `ro`。服务支持 HTTP；公网部署在 TLS 反向代理之后。Origin 白名单只解决浏览器访问，不代替身份认证。用户名/密码使用 UTF-8 HTTP Basic，密码至少 8 字节：用户名取 `username`，未写时读环境变量 `FS_SERVER_USER`；密码取内联 `password` 或 `password_env` 指向的环境变量。Basic 凭据不加密，非可信本机网络应使用 HTTPS。推荐 `api_key` 或 `api_key_env`（至少 24 字节、不设置 `username`），使用 Bearer 认证；旧名称 `token`/`token_env` 仍兼容，但不能和对应新名称同时配置。API Key 与密码认证互斥；同时设置 `username` 与 `token`/`token_env` 会启动失败，避免看起来是 Basic 实际只收 Bearer。内联 secret 写在服务端配置文件中。API Key 按启动连接提示输出到 console，不放入结构化事件或 HTTP 响应；旧 Basic 密码不输出。
 
-在“工具箱 → MCP”新增 HTTP 配置，填写完整 MCP 地址（例如 `http://127.0.0.1:8787/mcp`），将服务启动时输出的 API Key 填入同名字段并测试连接。通用发现响应已携带 pi-agent 能力描述；应用扩展验证后启用项目绑定，不需要额外用户名、密码或勾选框。旧服务器使用其已声明的能力工具。测试后的保存和改名复用验证结果，普通 MCP 不发 pi-agent 专用探测。只有验证成功的 pi-agent 配置可以用于目录绑定，普通 MCP 即使同名也不能绑定。可配置多条连接；工作台新建远程项目选择 MCP 配置和 `/alias/path`。项目展示“服务器名:项目名”，同一服务器、账号与规范化路径复用已有项目，改名不移动目录。
+在“工具箱 → MCP”新增 HTTP 配置，填写完整 MCP 地址（例如 `http://127.0.0.1:8787/mcp`），将服务启动时输出的 API Key 填入同名字段并测试连接。通用发现响应已携带 mindos-node 能力描述；应用扩展验证后启用项目绑定，不需要额外用户名、密码或勾选框。旧服务器使用其已声明的能力工具。测试后的保存和改名复用验证结果，普通 MCP 不发 mindos-node 专用探测。只有验证成功的 mindos-node 配置可以用于目录绑定，普通 MCP 即使同名也不能绑定。可配置多条连接；工作台新建远程项目选择 MCP 配置和 `/alias/path`。项目展示“服务器名:项目名”，同一服务器、账号与规范化路径复用已有项目，改名不移动目录。
 
 连接配置、API Key 和项目引用通过现有 MCP 配置持久保存；应用重启时从已验证的 MCP 配置恢复驱动凭据，无需重新输入。旧 Basic 配置的密码仍只保存在宿主运行期。CLI 持久配置引用由 `MINDOS_REMOTE_<credentialRef中横线替换为下划线>` 环境变量解析。直接 `mindos fs` 使用 `FS_SERVER_USER` + `FS_SERVER_PASSWORD`；未设置用户名时兼容 `FS_SERVER_TOKEN`。
 
@@ -73,14 +73,14 @@ API：`GET /v1/exports`、`POST /v1/fs/:alias/stat`（`{paths}`）、`GET entrie
 
 ```bash
 cargo test                                  # 本项目根目录
-pnpm --filter @itookit/piagent-driver test  # 在 itookit monorepo 内
+pnpm --filter @itookit/mindos-node-client test  # 在 itookit monorepo 内
 ```
 
 驱动测试在 Linux 启动真实 Rust 服务，验证协议、条件保存和 VFS 适配；其他平台跳过该服务端集成测试。设计和验收边界见 [设计文档](../../doc/design/vfs-http-driver.md)。
 
 包含远程来源的项目显示独立远程图标。服务断线时，仅关联项目的文件操作和新会话置灰禁用，已有会话仍可查看，其他项目继续可用；Settings 的重连入口保持可用。恢复连接后解除禁用。
 
-## pi-agent 增量接口
+## mindos-node 增量接口
 
 `GET /v1/capabilities` 需要认证，返回安装身份及文件/同步/进程/终端支持情况。可在配置顶层指定稳定的 `server_id = "my-agent-node"`；未配置时为启用执行的服务生成本次启动的随机节点标识（不保证跨重启不变）。命令执行默认开启，配置顶层 `execution = false` 可切换为纯文件服务。启用执行时，启动会验证 Linux bubblewrap、fd 挂载及 user namespace 支持，失败即退出。`sync.push` 在同步服务开启且健康时为 true，详细能力通过 `/v1/sync/capabilities` 查询；`terminal.pty` 仍为 false；普通命令不依赖工作区租约模块。
 
@@ -97,11 +97,11 @@ MindOS 项目右键菜单选择“启用远程命令”后，File Tools 和 Bash
 
 命令持有文件/进程互斥门，运行期间所有文件 API 返回 EBUSY；下载流、上传与后台提交保留其门直到结束。命令退出/取消并回收后使所有旧 revision 失效，避免 Bash 改动绕过条件写入。exclusive export 不允许其他宿主进程并发写入。执行锁在 monitor 中保留，daemon 意外退出后锁随进程清理释放。
 
-验收：`PI_AGENT_PROCESS_TEST=1 cargo test`（要求可创建 Linux user/PID/network namespace）。
+验收：`MINDOS_NODE_PROCESS_TEST=1 cargo test`（要求可创建 Linux user/PID/network namespace）。
 
 ## 项目多端同步
 
-同步存储、配置、管理员备份恢复与 HTTP 协议见 [单节点同步存储](doc/sync.md)。纯同步实例可使用 [config.sync.example.toml](config.sync.example.toml)，无需配置 export；sync.root 不存在或为空时首次启动自动初始化，也可先用 `pi-agent sync init CONFIG` 显式初始化。同步库与 export 使用独立目录，不自动发布工作目录的变化。
+同步存储、配置、管理员备份恢复与 HTTP 协议见 [单节点同步存储](doc/sync.md)。纯同步实例可使用 [config.sync.example.toml](config.sync.example.toml)，无需配置 export；sync.root 不存在或为空时首次启动自动初始化，也可先用 `mindos-node sync init CONFIG` 显式初始化。同步库与 export 使用独立目录，不自动发布工作目录的变化。
 
 ## 代码结构
 
@@ -130,9 +130,9 @@ MindOS 项目右键菜单选择“启用远程命令”后，File Tools 和 Bash
 
 ## 日志
 
-启动首先在终端打印 `pi-agent <版本号>`，配置或初始化失败时也能看到运行版本。`--version` / `-V` 只打印版本并退出，不读取配置或启动服务。日志初始化后先记录 `server.starting`（version、config、logFile），就绪时 `server.ready` 继续记录相同版本，启动失败事件也带版本。正常启动事件遵循 `log_level`（info 及以上详细级别可见）。
+启动首先在终端打印 `mindos-node <版本号>`，配置或初始化失败时也能看到运行版本。`--version` / `-V` 只打印版本并退出，不读取配置或启动服务。日志初始化后先记录 `server.starting`（version、config、logFile），就绪时 `server.ready` 继续记录相同版本，启动失败事件也带版本。正常启动事件遵循 `log_level`（info 及以上详细级别可见）。
 
-顶层 `log_level = "info"` 为默认值，可设 `trace/debug/info/warn/error/off`。服务事件同时输出到 stderr 和配置文件所在目录下的 `logs/pi-agent-<启动时间>-<PID>.jsonl`；启动终端打印绝对日志路径，`server.ready` 也记录版本和路径。以 `tools/config.toml` 启动时，默认目录为 `tools/logs/`。启动提示和 API Key 等终端文本不复制到文件，文件只接收结构化事件。
+顶层 `log_level = "info"` 为默认值，可设 `trace/debug/info/warn/error/off`。服务事件同时输出到 stderr 和配置文件所在目录下的 `logs/mindos-node-<启动时间>-<PID>.jsonl`；启动终端打印绝对日志路径，`server.ready` 也记录版本和路径。以 `tools/config.toml` 启动时，默认目录为 `tools/logs/`。启动提示和 API Key 等终端文本不复制到文件，文件只接收结构化事件。
 
 默认单文件 10 MiB，按完整记录轮转为 `.jsonl.1` 至 `.jsonl.4`，每次启动最多保留 5 份（包含当前文件）；旧启动的日志保留供排查，不自动删除。单条记录不截断，可能独自超过大小阈值。日志文件权限为 `0600`，新建目录为 `0700`。事件直接写入文件，不逐条 `fsync`；日志初始化失败时启动报错，运行中写入失败则提示终端并继续 stderr 日志，不中断任务。
 
@@ -173,7 +173,7 @@ retained_files = 5
 
 `kind = "dsh"` 适配 DSH 0.2.0-rc.2 的 `web` profile，协议依据 `deepseek-harness/tui/src/transport/` 及宿主 Session Controller。示例见 [config.dsh.example.toml](config.dsh.example.toml)。无需安装 dsht；Rust 驱动直接交换登录 cookie、调用 HTTP Remote 方法并读取 WebSocket mux，不解析 TUI 屏幕。
 
-已有多身份服务可将 [profiles/dsh.example.toml](profiles/dsh.example.toml) 追加到现有配置，替换实际 command/home，并绑定已有 `principal_id`。`home` 应指向原来的 DSH_HOME；新建空目录不会带入历史会话。0.3.3 的项目列表通过 ProjectRuntime 校验原生 workspace 的物理路径，兼容既有物理目录与 `/projects/<id>` 虚拟路径，并继续拒绝项目之外的会话。配置及二进制更新后重启 pi-agent，再在客户端刷新 MCP 能力；不需要复制历史或重建项目。
+已有多身份服务可将 [profiles/dsh.example.toml](profiles/dsh.example.toml) 追加到现有配置，替换实际 command/home，并绑定已有 `principal_id`。`home` 应指向原来的 DSH_HOME；新建空目录不会带入历史会话。0.3.3 的项目列表通过 ProjectRuntime 校验原生 workspace 的物理路径，兼容既有物理目录与 `/projects/<id>` 虚拟路径，并继续拒绝项目之外的会话。配置及二进制更新后重启 mindos-node，再在客户端刷新 MCP 能力；不需要复制历史或重建项目。
 
 默认 profile ID 使用 `codex`、`dsh` 等类型名；Codex 追加式模板见 [profiles/codex.example.toml](profiles/codex.example.toml)。改名可配置 `aliases = ["codex-main"]` 保留旧引用，发现列表仅返回新 ID 及 aliases 元数据。服务先将别名解析为规范 ID，再校验主体权限、选择项目实例及处理回执；旧名称和新名称共享同一实例，不创建重复会话或额外控制进程。别名必须是有效且全局唯一的 profile 标识，不能覆盖其他 profile 或别名。
 
@@ -181,29 +181,29 @@ retained_files = 5
 
 0.3.5 的历史投影使用持久事件中的原生 turn 编号，不再将不同轮次合并；分页从轮次中间开始也保持相同身份。实时流仍沿用当前提交的 requestId。DSH 会话额外返回可选 archiveAllowed，允许客户端显示空闲但未附着会话的归档操作；不以 owned 推测原生管理权限，归档提交仍再次核验原生运行状态与目录授权。
 
-默认托管模式显式配置 `command` 和已存在的私有 `home`（DSH_HOME），由 pi-agent 延迟启动 `dsh --patch <临时传输配置> --profile web --no-open --host 127.0.0.1 --port 0`，读取 readiness URL 后在内存交换 cookie。临时 overlay 在私有 home 内使用 0600 权限，固定回环地址、随机端口、readiness 输出及禁止打开浏览器，避免用户 profile 的固定绑定覆盖启动参数；进程回收后删除 overlay。请先在该 home 完成 DSH profile 初始化、模型与凭据配置；启动超时默认 120 秒。项目模式 `projects = true` 使用共同 ProjectRuntime/launcher、目录 grants 与文件活动租约；`[projects].network = true` 允许本机控制连接和模型网络。DSH 应安装在沙箱可访问的系统目录；源码开发启动器可能引用沙箱外路径，不能直接当作可部署命令。
+默认托管模式显式配置 `command` 和已存在的私有 `home`（DSH_HOME），由 mindos-node 延迟启动 `dsh --patch <临时传输配置> --profile web --no-open --host 127.0.0.1 --port 0`，读取 readiness URL 后在内存交换 cookie。临时 overlay 在私有 home 内使用 0600 权限，固定回环地址、随机端口、readiness 输出及禁止打开浏览器，避免用户 profile 的固定绑定覆盖启动参数；进程回收后删除 overlay。请先在该 home 完成 DSH profile 初始化、模型与凭据配置；启动超时默认 120 秒。项目模式 `projects = true` 使用共同 ProjectRuntime/launcher、目录 grants 与文件活动租约；`[projects].network = true` 允许本机控制连接和模型网络。DSH 应安装在沙箱可访问的系统目录；源码开发启动器可能引用沙箱外路径，不能直接当作可部署命令。
 
 已有服务模式设置 `[harnesses.dsh].url`（仅 HTTP(S) origin）及 `token_env`，令牌只在服务端环境解析。该模式必须使用显式 legacy workspaces、`projects = false`，且不能用于多身份项目运行时；已有 DSH 的工具权限由它自己的配置决定。不会结束已有服务进程。DSH 服务需允许该 URL 的 Host；HTTP(S) 与 WS(S) 均使用同一 origin 和 cookie。
 
 支持会话列表、历史分页、新建、继续、流式文本/推理、工具摘要、审批/问题回复、中断、重命名及归档。所有变更复用通用 epoch/requestId 回执；原生新建也携带确定性的会话 ID。HTTP 只等提交回执，模型执行由后台流推进；不同会话不共享模型等待锁。默认最多 64 个附着会话、128 个在途 HTTP 请求；WS 队列和重放缓冲有界。网络超时或无法确认的原生错误保持 unknown，不自动重发 prompt。
 
-暂不声明 fork、永久删除、取消归档、附件或用量计价能力；这些操作由能力描述隐藏。断线后该驱动实例拒绝继续写入，重启 pi-agent 后可显式继续原生持久会话；不会自动重放未知操作。托管实例退出时回收其进程组，活动结果不明时按共同文件门闩机制拒绝继续访问。日志复用 pi-agent JSONL，记录生命周期与安全的 DSH 错误代码，不输出 URL 令牌、cookie、prompt 或原生错误正文。
+暂不声明 fork、永久删除、取消归档、附件或用量计价能力；这些操作由能力描述隐藏。断线后该驱动实例拒绝继续写入，重启 mindos-node 后可显式继续原生持久会话；不会自动重放未知操作。托管实例退出时回收其进程组，活动结果不明时按共同文件门闩机制拒绝继续访问。日志复用 mindos-node JSONL，记录生命周期与安全的 DSH 错误代码，不输出 URL 令牌、cookie、prompt 或原生错误正文。
 
-0.3.1 的真实连接验收使用已发布 piagent-driver@0.2.0 → MCP → Rust DSH 驱动 → DSH 0.2.0-rc.2 → DeepSeek `deepseek-v4-flash`。验证新建、跨轮记忆、4 会话同时执行和流式增量隔离；SIGTERM 后托管 DSH 被回收，重启后继续原有会话仍保留上下文。共 10 个模型 turn 成功并持久记录 usage，测试会话全部归档。永久删除实际返回 ECAPABILITY 且保留会话，不计作删除成功。验收发现并修复用户绑定覆盖 CLI、新建 DTO 缺少 nullable updatedAt、SIGTERM 遗留原生写锁三个问题。
+0.3.1 的真实连接验收使用已发布 mindos-node-client@0.2.0 → MCP → Rust DSH 驱动 → DSH 0.2.0-rc.2 → DeepSeek `deepseek-v4-flash`。验证新建、跨轮记忆、4 会话同时执行和流式增量隔离；SIGTERM 后托管 DSH 被回收，重启后继续原有会话仍保留上下文。共 10 个模型 turn 成功并持久记录 usage，测试会话全部归档。永久删除实际返回 ECAPABILITY 且保留会话，不计作删除成功。验收发现并修复用户绑定覆盖 CLI、新建 DTO 缺少 nullable updatedAt、SIGTERM 遗留原生写锁三个问题。
 
 节点处理 SIGINT 和 SIGTERM，先 fence 并回收所有托管 harness，再关闭文件与连接；DSH、Codex 和 Claude 共用这一关闭入口。已有外部 DSH 进程不归节点管理，不随节点停止。
 
 启动时（日志级别 info 或更详细）输出可复制的 MCP endpoint、serverId、认证方式、凭据来源及实际 API Key；旧 Basic 配置只显示用户名和密码来源。监听通配地址时另外尝试显示默认路由的本机 IP 候选；多网卡、容器、NAT 或代理场景仍需填写客户端实际可达地址。该探测不发送 UDP 数据包，也不发现公网地址。
 
-认证使用每请求的 HTTP Basic 或 Bearer，没有 cookie 登录会话和自动到期时间；配置凭据不变时，服务重启后仍有效。itookit 的 pi-agent 项目绑定支持标准 MCP API Key（Bearer）和旧 Basic 配置；API Key 使用 MCP 既有存储，驱动运行时只保留内存副本。API Key 不写入项目挂载记录，MCP 导出仍移除 API Key。
+认证使用每请求的 HTTP Basic 或 Bearer，没有 cookie 登录会话和自动到期时间；配置凭据不变时，服务重启后仍有效。itookit 的 mindos-node 项目绑定支持标准 MCP API Key（Bearer）和旧 Basic 配置；API Key 使用 MCP 既有存储，驱动运行时只保留内存副本。API Key 不写入项目挂载记录，MCP 导出仍移除 API Key。
 
-使用 [config.harness.example.toml](config.harness.example.toml) 配置。`harnesses` 缺省为空，不启动或访问 Codex；每个 profile 显式设置已存在的绝对 CODEX_HOME 和授权 workspace。运行 pi-agent 的系统用户需已有 Codex 登录状态及已安装的 CLI。要浏览当前用户 ~/.codex 的会话，填写该目录的实际绝对路径；TOML 不展开 `~`。不读取未配置的其他 home，不把 auth.json 等密钥文件作为会话返回。
+使用 [config.harness.example.toml](config.harness.example.toml) 配置。`harnesses` 缺省为空，不启动或访问 Codex；每个 profile 显式设置已存在的绝对 CODEX_HOME 和授权 workspace。运行 mindos-node 的系统用户需已有 Codex 登录状态及已安装的 CLI。要浏览当前用户 ~/.codex 的会话，填写该目录的实际绝对路径；TOML 不展开 `~`。不读取未配置的其他 home，不把 auth.json 等密钥文件作为会话返回。
 
 `execution = false` 关闭原有 shell 服务，但仍可启用 harness；无需 exports 即可仅运行控制中心。workspace 必须与 exclusive rw exports 分离（启动时拒绝重叠），可用 ro export 浏览相同目录。`server_id` 可设置稳定服务身份。
 
-Web/Tauri 在工具箱 MCP 配置并测试连接后，在支持 harness 的 pi-agent 配置中点击“控制中心”。支持 profile/workspace、新建、分页/归档列表、历史、继续、发送、增量输出、命令/文件审批、用户问题、显式中断和未知请求收据确认。历史浏览不会接管会话；继续仅允许授权 cwd、拒绝接管其他宿主的活跃线程。关闭面板只释放客户端连接，服务端 turn 继续运行。CLI 宿主已统一 adapter 接入，独立 harness 命令行界面尚未提供。
+Web/Tauri 在工具箱 MCP 配置并测试连接后，在支持 harness 的 mindos-node 配置中点击“控制中心”。支持 profile/workspace、新建、分页/归档列表、历史、继续、发送、增量输出、命令/文件审批、用户问题、显式中断和未知请求收据确认。历史浏览不会接管会话；继续仅允许授权 cwd、拒绝接管其他宿主的活跃线程。关闭面板只释放客户端连接，服务端 turn 继续运行。CLI 宿主已统一 adapter 接入，独立 harness 命令行界面尚未提供。
 
-服务提供认证后的 `POST /mcp`：MCP SDK 2.0.0 / 协议 2026-07-28，支持 server/discover、tools/list/call、ping；不宣告 Tasks 扩展。工具为 piagent_capabilities、harness_profiles、harness_sessions、harness_session_read、harness_events、harness_operation、harness_create、harness_resume、harness_turn、harness_interrupt、harness_respond。请求验证 protocol/version、method/name 和客户端 metadata，带 Origin 的请求还验证允许列表。Codex 控制采用官方 app-server stdio JSON-RPC，命令和目录只来自服务端配置。
+服务提供认证后的 `POST /mcp`：MCP SDK 2.0.0 / 协议 2026-07-28，支持 server/discover、tools/list/call、ping；不宣告 Tasks 扩展。工具为 mindos_node_capabilities（兼容 piagent_capabilities / fsagent_capabilities）、harness_profiles、harness_sessions、harness_session_read、harness_events、harness_operation、harness_create、harness_resume、harness_turn、harness_interrupt、harness_respond。请求验证 protocol/version、method/name 和客户端 metadata，带 Origin 的请求还验证允许列表。Codex 控制采用官方 app-server stdio JSON-RPC，命令和目录只来自服务端配置。
 
 已验证 Codex CLI 0.159.2。项目沙箱在配置的真实绝对路径挂载 harness home，并保留 `/harness` 兼容入口，避免原生 SQLite 索引中的绝对日志路径失效。`harness_session_info` 只读取元信息；普通会话历史优先原生 API，paginated 会话及 `toolDetail: "summary"` 请求读取 home 下 sessions/archived_sessions JSONL。历史使用 8 MiB 的日志窗口，必要时通过有界缓冲向前查找真实 turn_context/task_started，返回最多 100 项/2 MiB，通过 `nextCursor` 加载更早内容。保留真实 turnId、时间和消息内容数组，兼容 custom_tool_call；摘要模式在分页预算前去除工具参数和输出，只返回工具名称、操作、首个非空命令行（最多 240 个字符）和目标文件。事件也支持摘要模式并保留原始游标及审批请求。原生 createdAt/updatedAt 分别统一转换为毫秒，缺失时间返回 null；空名称回退原生请求预览，branchName 独立返回；session.native 不重复附带整份 turns。路径禁止符号链接，未完成尾行等待刷新；不修改原生索引或日志。继续会话使用 `thread/resume` 的 `excludeTurns`，由原生 CLI 确认可用性。
 
@@ -222,14 +222,14 @@ Codex app-server 的 stdin 写入和 stdout 读取独立推进；大 prompt 的�
 验证（在 itookit 根目录）：
 
 ```bash
-cargo test --offline --manifest-path tools/pi-agent/Cargo.toml
-PI_AGENT_CODEX_TEST=1 cargo test --offline --manifest-path tools/pi-agent/Cargo.toml --test harness
-PI_AGENT_HARNESS_TEST=1 pnpm --filter @itookit/piagent-driver test tests/network.test.ts
+cargo test --offline --manifest-path tools/mindos-node/Cargo.toml
+MINDOS_NODE_CODEX_TEST=1 cargo test --offline --manifest-path tools/mindos-node/Cargo.toml --test harness
+MINDOS_NODE_HARNESS_TEST=1 pnpm --filter @itookit/mindos-node-client test tests/network.test.ts
 ```
 
 第一项包含原生协议模拟测试；第二项用独立临时 CODEX_HOME 启动真实 Codex，只验证创建/历史，不调用模型，也不读取个人会话；第三项用真实 MCP SDK、Rust HTTP 服务和模拟 Codex 验证完整操作。
 
-server/discover 的 `_meta['itookit/pi-agent']` 返回文件协议版本、同源相对 HTTP 端点、安装 serverId、项目和 harness 支持；piagent_capabilities 返回同一描述并保留旧客户端兼容。客户端优先复用标准发现响应，不根据名字判断服务；该描述是本服务扩展，不是 MCP 标准保证。建议显式配置全局唯一且稳定的 server_id，以识别同一安装的不同访问地址。多个原生 harness 由服务端插件注册表适配，共用这一 MCP 连接；当前内置 Codex 与 Claude Code。
+server/discover 的 `_meta['itookit/mindos-node']`（同时保留旧 `itookit/pi-agent`）返回文件协议版本、同源相对 HTTP 端点、安装 serverId、项目和 harness 支持；mindos_node_capabilities 返回同一描述并保留旧客户端兼容。客户端优先复用标准发现响应，不根据名字判断服务；该描述是本服务扩展，不是 MCP 标准保证。建议显式配置全局唯一且稳定的 server_id，以识别同一安装的不同访问地址。多个原生 harness 由服务端插件注册表适配，共用这一 MCP 连接；当前内置 Codex、Claude Code 与 DSH。
 
 
 ## 目录项目模式
@@ -238,7 +238,7 @@ server/discover 的 `_meta['itookit/pi-agent']` 返回文件协议版本、同�
 
 MCP 提供 project_roots/list/read/register/configure/exec；harness 工具增加 projectId/revision/readOnly 上下文。新 harness profile 设置 projects=true，在外层 bubblewrap 内运行；命令应指向可独立运行的 native binary。projects.network 默认为 false；联网需显式开启。目标挂载目录先创建，再提交策略。无法启用沙箱时拒绝执行。
 
-当前 FileGate 是安装级，turn 执行期间文件请求可能返回 EBUSY。VMM 和项目级并发尚未实现，已留共同 ProjectLauncher 端口。详细授权、兼容行为与验证范围见 [项目模型](../../doc/design/pi-agent-project-model.md)。
+当前 FileGate 是安装级，turn 执行期间文件请求可能返回 EBUSY。VMM 和项目级并发尚未实现，已留共同 ProjectLauncher 端口。详细授权、兼容行为与验证范围见 [项目模型](../../doc/design/mindos-node-project-model.md)。
 
 同时启用 `[projects]` 与 `[sync]` 后，目录绑定支持数据集落地、目录回传和双向同步。
 使用 `project_sync_directories` 浏览项目内的已有子目录；绑定和预览不写入文件。
@@ -249,7 +249,7 @@ MCP 提供 project_roots/list/read/register/configure/exec；harness 工具增�
 回传复用 sync 的 CAS 发布与持久回执，关闭面板或未知结果时通过 status 继续同一计划。
 默认更新模式保留目标独有文件，不传播删除、不穿透附加挂载或 .mindos；镜像删除未开放。
 
-服务曾名为 fs-agent。升级时继续使用原 config.toml、server_id、API Key、projects.root、sync.root 和 harness home；数据目录无需改名。新程序为 pi-agent，MCP 主发现工具为 piagent_capabilities，旧 fsagent_capabilities 保留为兼容别名。文件／项目协议标识、HTTP 授权头和 fs-agent.files／fs-agent.bundle 的规范编码沿用原格式，已有摘要、历史和绑定可以继续使用。
+服务由 pi-agent 更名为 mindos-node，更早名称为 fs-agent。升级时继续使用原 config.toml、server_id、API Key、projects.root、sync.root 和 harness home；数据目录和配置中的环境变量名无需改名。新程序为 mindos-node，启动横幅、MCP serverInfo 与新日志文件使用新名称；MCP 主发现工具为 mindos_node_capabilities，piagent_capabilities 与 fsagent_capabilities 保留为兼容别名。标准发现同时返回 itookit/mindos-node 与旧 itookit/pi-agent 描述。文件／项目协议标识、x-pi-agent-* 授权头、旧 serverId 前缀及 fs-agent.files／fs-agent.bundle 编码保持兼容，已有摘要、历史和绑定继续使用。子进程同时获得 MINDOS_NODE_PROJECT 与旧 PI_AGENT_PROJECT。
 
 
 ### 项目与原生会话搜索
@@ -285,7 +285,7 @@ Codex 提供 `harness_rename`、`harness_archive`、`harness_unarchive`、`harne
 id = "claude"
 kind = "claude"
 command = "/usr/local/bin/claude"
-home = "/srv/pi-agent/claude-home"
+home = "/srv/mindos-node/claude-home"
 projects = true
 ```
 
@@ -331,7 +331,7 @@ The transcript scope includes inherited branch history and only the usage record
 
 ACL 可通过下述本地管理 CLI 修改配置，重启后生效，不提供在线 ACL 管理接口。重启按原有流程停止和回收进程；客户端需重新发现能力并刷新受影响绑定，不将授权版本变化视为可重放写入。同步仍使用一个配置的 principal/namespace，仅对应身份可访问；多身份模式不会把单个 sync namespace 自动开放给所有目录用户。
 
-itookit 的 MCP 编辑器支持 Bearer、Basic 和显式匿名访问；各连接绑定自己的身份与权限快照。此模式支持不同 itookit 实例共享 pi-agent；同一个 MindOS httpd 当前仍是单用户运行时，客户端证书只是准入，不是多租户隔离。
+itookit 的 MCP 编辑器支持 Bearer、Basic 和显式匿名访问；各连接绑定自己的身份与权限快照。此模式支持不同 itookit 实例共享 mindos-node；同一个 MindOS httpd 当前仍是单用户运行时，客户端证书只是准入，不是多租户隔离。
 
 
 ## 目录授权管理 CLI（0.3.2）
@@ -339,39 +339,39 @@ itookit 的 MCP 编辑器支持 Bearer、Basic 和显式匿名访问；各连接
 目录本身不保存单独的密码。Bearer/Basic 验证用户身份，export 的 grants 决定该身份可以读、写或执行哪些目录。同一身份可访问多个目录，同一目录可向不同身份开放不同权限；`public` 独立开放匿名只读。配置中的 `access` 是共享目录的上限，`execute` 独立于读写权限。
 
 ```bash
-pi-agent --help
-pi-agent access --help
-pi-agent access --config /srv/pi-agent/config.toml list
-pi-agent access --config /srv/pi-agent/config.toml validate
+mindos-node --help
+mindos-node access --help
+mindos-node access --config /srv/mindos-node/config.toml list
+mindos-node access --config /srv/mindos-node/config.toml validate
 
 # Existing single-user credentials become principal owner, retaining existing permissions.
 # Preview first; no configuration, lock or backup file is written by --dry-run.
-pi-agent access --config /srv/pi-agent/config.toml --dry-run init
-pi-agent access --config /srv/pi-agent/config.toml init
+mindos-node access --config /srv/mindos-node/config.toml --dry-run init
+mindos-node access --config /srv/mindos-node/config.toml init
 
 # Provision a credential using the operator's existing environment or service EnvironmentFile.
 # Example token generation; keep the same value available to the restarted service.
 export PI_ALICE_TOKEN="$(openssl rand -hex 32)"
-pi-agent access --config /srv/pi-agent/config.toml principal add alice --token-env PI_ALICE_TOKEN
-pi-agent access --config /srv/pi-agent/config.toml grant alice project ro
-pi-agent access --config /srv/pi-agent/config.toml grant alice project rw --execute
+mindos-node access --config /srv/mindos-node/config.toml principal add alice --token-env PI_ALICE_TOKEN
+mindos-node access --config /srv/mindos-node/config.toml grant alice project ro
+mindos-node access --config /srv/mindos-node/config.toml grant alice project rw --execute
 
 # A new share has no implicit authenticated grants. Paths must exist and cannot overlap exports.
-pi-agent access --config /srv/pi-agent/config.toml share add reference /srv/reference ro
-pi-agent access --config /srv/pi-agent/config.toml grant alice reference ro
-pi-agent access --config /srv/pi-agent/config.toml share set reference --public true
-pi-agent access --config /srv/pi-agent/config.toml check anonymous reference read
-pi-agent access --config /srv/pi-agent/config.toml check alice reference write
+mindos-node access --config /srv/mindos-node/config.toml share add reference /srv/reference ro
+mindos-node access --config /srv/mindos-node/config.toml grant alice reference ro
+mindos-node access --config /srv/mindos-node/config.toml share set reference --public true
+mindos-node access --config /srv/mindos-node/config.toml check anonymous reference read
+mindos-node access --config /srv/mindos-node/config.toml check alice reference write
 
 # Remove explicit access; inherited public reads still apply until public is disabled.
-pi-agent access --config /srv/pi-agent/config.toml revoke alice reference
-pi-agent access --config /srv/pi-agent/config.toml share set reference --public false
-pi-agent access --config /srv/pi-agent/config.toml share remove reference
+mindos-node access --config /srv/mindos-node/config.toml revoke alice reference
+mindos-node access --config /srv/mindos-node/config.toml share set reference --public false
+mindos-node access --config /srv/mindos-node/config.toml share remove reference
 
 # Rotate credentials without changing principal identity or its project/session ownership.
-pi-agent access --config /srv/pi-agent/config.toml principal credential alice --token-env PI_ALICE_NEW_TOKEN
-pi-agent access --config /srv/pi-agent/config.toml principal add bob --username bob --password-env PI_BOB_PASSWORD
-pi-agent access --config /srv/pi-agent/config.toml principal remove bob
+mindos-node access --config /srv/mindos-node/config.toml principal credential alice --token-env PI_ALICE_NEW_TOKEN
+mindos-node access --config /srv/mindos-node/config.toml principal add bob --username bob --password-env PI_BOB_PASSWORD
+mindos-node access --config /srv/mindos-node/config.toml principal remove bob
 ```
 
 `--config` 可放在命令参数前后；省略时沿用服务的 `config.toml` 查找规则。所有输出为 JSON，只有身份、凭据来源字段名和权限，不打印凭据值。拒绝的 `check` 会返回 `allowed: false` 并以非零状态退出；结果明确标记 `scope: configured-policy`、`runtimeVerified: false`，用于配置决策，不代表运行中进程已经应用修改。检查通过只证明认证、目录、原生 profile 等相关配置可被解析，不证明独占写锁、沙箱、模型登录或网络可运行。

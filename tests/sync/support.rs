@@ -1,6 +1,6 @@
 use axum::{body::Body, http::Request, Router};
 use http_body_util::BodyExt;
-use pi_agent::{
+use mindos_node::{
     app::State,
     sync::{Config, SyncService},
 };

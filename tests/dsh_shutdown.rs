@@ -36,7 +36,7 @@ path={home:?}
         ),
     )
     .unwrap();
-    let mut process = tokio::process::Command::new(env!("CARGO_BIN_EXE_pi-agent"))
+    let mut process = tokio::process::Command::new(env!("CARGO_BIN_EXE_mindos-node"))
         .arg(&config)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

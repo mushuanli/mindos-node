@@ -1,4 +1,4 @@
-use pi_agent::{config::Config, harness::Harnesses};
+use mindos_node::{config::Config, harness::Harnesses};
 use serde_json::{json, Value};
 
 #[tokio::test]
@@ -125,7 +125,7 @@ fn fixture(root: &std::path::Path) -> Harnesses {
     std::fs::create_dir(&workspace).unwrap();
     let config:Config=toml::from_str(&format!("listen=\"127.0.0.1:0\"\nexecution=false\ntoken=\"claude-fixture-token-0123456789\"\n[[harnesses]]\nid=\"claude\"\nkind=\"claude\"\ncommand={script:?}\nhome={home:?}\n[[harnesses.workspaces]]\nid=\"workspace\"\npath={workspace:?}\n")).unwrap();
     Harnesses::new(
-        pi_agent::harness::config::validate(&config).unwrap(),
+        mindos_node::harness::config::validate(&config).unwrap(),
         "epoch".into(),
     )
     .unwrap()

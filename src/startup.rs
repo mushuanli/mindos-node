@@ -1,5 +1,5 @@
 //! Connection hints; the entry point separately prints the configured API Key.
-use pi_agent::{app::State, config::Config};
+use mindos_node::{app::State, config::Config};
 use serde::Serialize;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 
@@ -178,15 +178,15 @@ mod tests {
 
     #[test]
     fn environment_authentication_reports_only_the_reference() {
-        let config = config("token_env='PI_AGENT_TOKEN'");
+        let config = config("token_env='MINDOS_NODE_TOKEN'");
         let text = summary(&config, "0.0.0.0:43210".parse().unwrap(), None, None);
-        assert!(text.contains("token from environment variable PI_AGENT_TOKEN"));
+        assert!(text.contains("token from environment variable MINDOS_NODE_TOKEN"));
         assert!(text.contains("<server-ip>"));
         assert!(text.contains(":43210"));
     }
 
     fn permission_fixture() -> (Vec<tempfile::TempDir>, std::sync::Arc<State>) {
-        use pi_agent::{
+        use mindos_node::{
             auth::{Auth, Client},
             fs::{Export, Exports},
         };

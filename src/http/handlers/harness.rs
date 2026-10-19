@@ -42,9 +42,10 @@ pub async fn mcp(
     let method = body["method"].as_str().unwrap_or("");
     let result = match method {
         "server/discover" => {
+            let descriptor = capabilities(&state, identity);
             json!({"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":[VERSION],"capabilities":{"tools":{}},
-            "_meta":{"io.modelcontextprotocol/serverInfo":{"name":"pi-agent","version":env!("CARGO_PKG_VERSION")},
-                "itookit/pi-agent":capabilities(&state, identity)}})
+            "_meta":{"io.modelcontextprotocol/serverInfo":{"name":"mindos-node","version":env!("CARGO_PKG_VERSION")},
+                "itookit/mindos-node":descriptor.clone(),"itookit/pi-agent":descriptor}})
         }
         "ping" => json!({"resultType":"complete"}),
         "tools/list" => {
@@ -142,7 +143,10 @@ async fn call(state: &Arc<State>, identity: usize, params: &Value) -> Value {
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let result = if name == "piagent_capabilities" || name == "fsagent_capabilities" {
+    let result = if matches!(
+        name,
+        "mindos_node_capabilities" | "piagent_capabilities" | "fsagent_capabilities"
+    ) {
         Ok(capabilities(state, identity))
     } else if name.starts_with("project_") {
         crate::projects::call(state, identity, name, args).await
@@ -287,13 +291,18 @@ fn tools() -> Vec<Value> {
             ],
         ),
         (
-            "piagent_capabilities",
+            "mindos_node_capabilities",
             "Discover this gateway's same-origin HTTP file endpoint and installation identity",
             vec![],
         ),
         (
+            "piagent_capabilities",
+            "Compatibility alias for mindos_node_capabilities",
+            vec![],
+        ),
+        (
             "fsagent_capabilities",
-            "Compatibility alias for piagent_capabilities",
+            "Compatibility alias for mindos_node_capabilities",
             vec![],
         ),
         (
@@ -464,7 +473,7 @@ fn tool(name: &str, description: &str, required: Vec<&str>) -> Value {
     properties.insert("watchId".into(), json!({"type":"string","maxLength":128}));
     properties.insert("attachments".into(), json!({"type":"array","maxItems":5,"items":{"type":"object","required":["kind","name","content"],"properties":{"kind":{"enum":["text","image"]},"name":{"type":"string","maxLength":256},"content":{"type":"string","maxLength":524288},"mimeType":{"type":"string"}},"additionalProperties":false}}));
     json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required},
-        "annotations":{"readOnlyHint":matches!(name,"harness_models"|"harness_commands"|"harness_session_usage"|"harness_session_search"|"project_watch"|"project_unwatch"|"project_search"|"project_sync_directories"|"project_sync_compare"|"project_sync_status"|"piagent_capabilities"|"fsagent_capabilities"|"project_roots"|"project_list"|"project_read"|"harness_profiles"|"harness_sessions"|"harness_session_read"|"harness_session_info"|"harness_events"|"harness_operation"),
+        "annotations":{"readOnlyHint":matches!(name,"harness_models"|"harness_commands"|"harness_session_usage"|"harness_session_search"|"project_watch"|"project_unwatch"|"project_search"|"project_sync_directories"|"project_sync_compare"|"project_sync_status"|"mindos_node_capabilities"|"piagent_capabilities"|"fsagent_capabilities"|"project_roots"|"project_list"|"project_read"|"harness_profiles"|"harness_sessions"|"harness_session_read"|"harness_session_info"|"harness_events"|"harness_operation"),
         "openWorldHint":true}})
 }
 

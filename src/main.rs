@@ -12,8 +12,8 @@
 //! closes. The order matters — the file gate is drained before the process is
 //! allowed to exit.
 
-use pi_agent::core::events::emit;
-use pi_agent::{app::State, config::launch, process, router};
+use mindos_node::core::events::emit;
+use mindos_node::{app::State, config::launch, process, router};
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 
@@ -30,7 +30,7 @@ async fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             emit(
-                pi_agent::core::events::Level::Error,
+                mindos_node::core::events::Level::Error,
                 if std::env::args()
                     .nth(1)
                     .is_some_and(|arg| arg == "access" || arg == "sync")
@@ -52,33 +52,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .first()
         .is_some_and(|arg| arg == "--version" || arg == "-V")
     {
-        println!("pi-agent {}", env!("CARGO_PKG_VERSION"));
+        println!("mindos-node {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args
         .first()
         .is_some_and(|arg| arg == "--help" || arg == "-h")
     {
-        println!("{}", pi_agent::cli::HELP);
+        println!("{}", mindos_node::cli::HELP);
         return Ok(());
     }
-    eprintln!("pi-agent {}", env!("CARGO_PKG_VERSION"));
+    eprintln!("mindos-node {}", env!("CARGO_PKG_VERSION"));
     if args.first().is_some_and(|arg| arg == "access") {
-        return pi_agent::cli::access(&args[1..]).map_err(Into::into);
+        return mindos_node::cli::access(&args[1..]).map_err(Into::into);
     }
     if args.first().is_some_and(|s| s == "sync") {
-        return pi_agent::sync::admin(&args[1..]).map_err(Into::into);
+        return mindos_node::sync::admin(&args[1..]).map_err(Into::into);
     }
     if args.len() > 1 || args.first().is_some_and(|arg| arg.starts_with('-')) {
-        return Err("Invalid server arguments; use pi-agent --help".into());
+        return Err("Invalid server arguments; use mindos-node --help".into());
     }
     let path = launch::resolve(args.first().map(String::as_str))?;
     let config = launch::load(&path)?;
-    pi_agent::core::events::set_level(config.log_level);
-    let log_file = pi_agent::core::events::init_file(&config.logging, &path)?;
+    mindos_node::core::events::set_level(config.log_level);
+    let log_file = mindos_node::core::events::init_file(&config.logging, &path)?;
     eprintln!("  Log file: {}", log_file.display());
     emit(
-        pi_agent::core::events::Level::Info,
+        mindos_node::core::events::Level::Info,
         "server.starting",
         json!({"version": env!("CARGO_PKG_VERSION"), "config": path, "logFile": log_file}),
     );
@@ -86,13 +86,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Advertise execution only after the sandbox has been proven to work.
     if config.execution {
         emit(
-            pi_agent::core::events::Level::Debug,
+            mindos_node::core::events::Level::Debug,
             "sandbox.probing",
             json!({}),
         );
         process::enable(&state).await?;
         emit(
-            pi_agent::core::events::Level::Info,
+            mindos_node::core::events::Level::Info,
             "sandbox.ready",
             json!({}),
         );
@@ -103,16 +103,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = router(state.clone(), &config.allowed_origins)?;
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     emit(
-        pi_agent::core::events::Level::Info,
+        mindos_node::core::events::Level::Info,
         "server.ready",
         json!({"address": listener.local_addr()?.to_string(), "serverId": state.auth.server_id(),
         "version": env!("CARGO_PKG_VERSION"), "logFile": log_file,
         "principals":state.auth.clients().iter().map(|c| c.authorization()).collect::<Vec<_>>(),
         "execution": config.execution, "exportCount": config.exports.len(), "exports": startup::export_access(&state)}),
     );
-    if pi_agent::core::events::enabled(pi_agent::core::events::Level::Info) {
+    if mindos_node::core::events::enabled(mindos_node::core::events::Level::Info) {
         eprintln!(
-            "pi-agent listening on {} (config {})",
+            "mindos-node listening on {} (config {})",
             listener.local_addr()?,
             path.display()
         );
@@ -131,7 +131,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 async fn shutdown(state: Arc<State>) {
     let signal = shutdown_signal().await.unwrap_or("signal-error");
     emit(
-        pi_agent::core::events::Level::Info,
+        mindos_node::core::events::Level::Info,
         "server.stopping",
         json!({"signal":signal}),
     );
@@ -148,7 +148,7 @@ async fn shutdown(state: Arc<State>) {
         .is_err()
     {
         emit(
-            pi_agent::core::events::Level::Warn,
+            mindos_node::core::events::Level::Warn,
             "server.drain_timeout",
             json!({"timeoutMs": DRAIN_TIMEOUT.as_millis()}),
         );
@@ -157,7 +157,7 @@ async fn shutdown(state: Arc<State>) {
     tokio::spawn(async move {
         tokio::time::sleep(CONNECTION_GRACE).await;
         emit(
-            pi_agent::core::events::Level::Info,
+            mindos_node::core::events::Level::Info,
             "server.connection_grace_elapsed",
             json!({}),
         );
@@ -181,7 +181,7 @@ async fn drain_sync(state: &State) {
     match tokio::time::timeout(DRAIN_TIMEOUT, work).await {
         Ok(Ok(Ok(()))) => {}
         result => emit(
-            pi_agent::core::events::Level::Warn,
+            mindos_node::core::events::Level::Warn,
             "sync.drain_failed",
             json!({"result":format!("{result:?}"),"recoveryRequired":true}),
         ),

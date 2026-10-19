@@ -3,7 +3,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use pi_agent::{app::State, config::Config};
+use mindos_node::{app::State, config::Config};
 use serde_json::{json, Value};
 use std::{path::Path, sync::Arc};
 use tower::ServiceExt;
@@ -47,7 +47,7 @@ pub async fn request(
     if let Some(token) = token {
         request = request.header("authorization", format!("Bearer {token}"));
     }
-    let response = pi_agent::router(state.clone(), &[])
+    let response = mindos_node::router(state.clone(), &[])
         .unwrap()
         .oneshot(request.body(Body::from(value.to_string())).unwrap())
         .await

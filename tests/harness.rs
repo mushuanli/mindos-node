@@ -3,7 +3,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use pi_agent::{
+use mindos_node::{
     app::State,
     config::Config,
     harness::{config::ProfileConfig, Harnesses},
@@ -37,7 +37,7 @@ fn service(root: &Path) -> Harnesses {
     std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
     let config = config(root, fixture.to_str().unwrap());
     Harnesses::new(
-        pi_agent::harness::config::validate(&config).unwrap(),
+        mindos_node::harness::config::validate(&config).unwrap(),
         "epoch".into(),
     )
     .unwrap()
@@ -299,18 +299,18 @@ async fn rejects_unauthorized_resume_foreign_turn_epoch_and_changed_id_payload()
 fn rejects_profiles_overlapping_exclusive_exports() {
     let root = tempfile::tempdir().unwrap();
     let mut config = config(root.path(), "codex");
-    config.exports.push(pi_agent::config::ExportConfig {
+    config.exports.push(mindos_node::config::ExportConfig {
         path: root.path().to_str().unwrap().into(),
         alias: Some("rw".into()),
-        access: pi_agent::config::Access::Rw,
+        access: mindos_node::config::Access::Rw,
         public: false,
         grants: vec![],
     });
-    assert!(pi_agent::harness::config::validate(&config).is_err());
+    assert!(mindos_node::harness::config::validate(&config).is_err());
     let mut duplicate: ProfileConfig = config.harnesses[0].clone();
     duplicate.id = "codex".into();
     config.harnesses.push(duplicate);
-    assert!(pi_agent::harness::config::validate(&config).is_err());
+    assert!(mindos_node::harness::config::validate(&config).is_err());
 }
 
 fn body(method: &str) -> Value {
@@ -323,7 +323,7 @@ fn body(method: &str) -> Value {
 async fn mcp_auth_version_metadata_origin_and_discovery() {
     let root = tempfile::tempdir().unwrap();
     let state = State::from_config(&config(root.path(), "codex")).unwrap();
-    let app = pi_agent::router(state, &[]).unwrap();
+    let app = mindos_node::router(state, &[]).unwrap();
     let request = |auth: bool, version: &str, origin: Option<&str>| {
         let mut builder = Request::post("/mcp")
             .header("content-type", "application/json")
@@ -371,6 +371,14 @@ async fn mcp_auth_version_metadata_origin_and_discovery() {
     let result: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(result["result"]["supportedVersions"][0], "2026-07-28");
+    assert_eq!(
+        result["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "mindos-node"
+    );
+    assert_eq!(
+        result["result"]["_meta"]["itookit/mindos-node"],
+        result["result"]["_meta"]["itookit/pi-agent"]
+    );
     assert_eq!(result["result"]["_meta"]["itookit/pi-agent"]["version"], 1);
     assert_eq!(
         result["result"]["_meta"]["itookit/pi-agent"]["harness"],
@@ -383,14 +391,58 @@ async fn mcp_auth_version_metadata_origin_and_discovery() {
 }
 
 #[tokio::test]
+async fn renamed_capability_tool_and_legacy_aliases_share_the_same_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let app = mindos_node::router(
+        State::from_config(&config(root.path(), "codex")).unwrap(),
+        &[],
+    )
+    .unwrap();
+    let mut descriptors = Vec::new();
+    for name in [
+        "mindos_node_capabilities",
+        "piagent_capabilities",
+        "fsagent_capabilities",
+    ] {
+        let mut request = body("tools/call");
+        request["params"]["name"] = json!(name);
+        request["params"]["arguments"] = json!({});
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer test-harness-token-0123456789")
+                    .header("mcp-method", "tools/call")
+                    .header("mcp-name", name)
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert!(result.get("error").is_none());
+        let descriptor = result["result"]["structuredContent"].clone();
+        assert_eq!(descriptor["fileProtocol"], "fs-agent-http-v1");
+        descriptors.push(descriptor);
+    }
+    assert_eq!(descriptors[0], descriptors[1]);
+    assert_eq!(descriptors[0], descriptors[2]);
+}
+
+#[tokio::test]
 async fn native_codex_creates_legacy_sessions_and_reads_unmaterialized_history() {
-    if std::env::var("PI_AGENT_CODEX_TEST").as_deref() != Ok("1") {
+    if std::env::var("MINDOS_NODE_CODEX_TEST").as_deref() != Ok("1") {
         return;
     }
     let root = tempfile::tempdir().unwrap();
     let config = config(root.path(), "codex");
     let service = Harnesses::new(
-        pi_agent::harness::config::validate(&config).unwrap(),
+        mindos_node::harness::config::validate(&config).unwrap(),
         "epoch".into(),
     )
     .unwrap();
@@ -677,7 +729,7 @@ async fn permanent_deletion_checks_ownership_and_keeps_a_replay_safe_receipt() {
 
 #[tokio::test]
 async fn native_codex_archives_unloaded_history_and_permanently_removes_it() {
-    if std::env::var("PI_AGENT_CODEX_TEST").as_deref() != Ok("1") {
+    if std::env::var("MINDOS_NODE_CODEX_TEST").as_deref() != Ok("1") {
         return;
     }
     let root = tempfile::tempdir().unwrap();
@@ -690,7 +742,7 @@ async fn native_codex_archives_unloaded_history_and_permanently_removes_it() {
     std::fs::write(&path, format!("{metadata}\n{message}\n")).unwrap();
     let config = config(root.path(), "codex");
     let service = Harnesses::new(
-        pi_agent::harness::config::validate(&config).unwrap(),
+        mindos_node::harness::config::validate(&config).unwrap(),
         "epoch".into(),
     )
     .unwrap();

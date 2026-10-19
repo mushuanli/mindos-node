@@ -1,4 +1,4 @@
-use pi_agent::{app::State, config::Config, projects::call};
+use mindos_node::{app::State, config::Config, projects::call};
 use serde_json::{json, Value};
 use std::{os::unix::fs::symlink, sync::Arc};
 
@@ -65,7 +65,7 @@ async fn search(
     project: &Value,
     query: &str,
     mode: &str,
-) -> Result<Value, pi_agent::core::error::Error> {
+) -> Result<Value, mindos_node::core::error::Error> {
     call(
         state,
         0,
@@ -80,7 +80,7 @@ async fn scoped_search(
     query: &str,
     mode: &str,
     directory: &str,
-) -> Result<Value, pi_agent::core::error::Error> {
+) -> Result<Value, mindos_node::core::error::Error> {
     call(
         state,
         0,

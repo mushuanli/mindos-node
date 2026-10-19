@@ -1,4 +1,4 @@
-use pi_agent::{app::State, config::Config, projects::call};
+use mindos_node::{app::State, config::Config, projects::call};
 use serde_json::{json, Value};
 use std::{os::unix::fs::symlink, sync::Arc};
 fn fixture() -> (tempfile::TempDir, Arc<State>) {

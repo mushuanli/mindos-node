@@ -1,4 +1,4 @@
-# Append to an existing multi-principal pi-agent configuration.
+# Append to an existing multi-principal mindos-node configuration.
 # Replace installed paths and bind an existing principal.
 [[harnesses]]
 id = "codex"

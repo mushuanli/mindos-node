@@ -1,4 +1,4 @@
-use pi_agent::{app::State, config::Config, projects::call};
+use mindos_node::{app::State, config::Config, projects::call};
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
 
@@ -14,7 +14,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<State>, Value) {
         "listen='127.0.0.1:0'\nexecution=true\nserver_id='parallel-test'\ntoken='isolated-concurrency-secret-0123456789'\n[projects]\nroot={:?}\n[[exports]]\nalias='work'\npath={:?}\naccess='rw'\n[[harnesses]]\nid='codex'\nkind='codex'\ncommand={:?}\nhome={:?}\nprojects=true\n",
         root.path().join("catalog"), root.path().join("work"), peer, root.path().join("home"))).unwrap();
     let state = State::from_config(&config).unwrap();
-    pi_agent::process::enable(&state).await.unwrap();
+    mindos_node::process::enable(&state).await.unwrap();
     let project = call(
         &state,
         0,

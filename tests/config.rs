@@ -1,4 +1,4 @@
-use pi_agent::{app::State, config::Config};
+use mindos_node::{app::State, config::Config};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 // Credential resolution reads the process environment, so the tests serialize.
@@ -49,7 +49,7 @@ fn read_write_access_implies_exclusive_writes() {
     .unwrap();
     assert!(state.auth.clients()[0].may_write("x1"));
     assert!(state.exports.get("x1").unwrap().writable());
-    assert!(pi_agent::fs::Export::exclusive(std::path::Path::new(&path)).is_err());
+    assert!(mindos_node::fs::Export::exclusive(std::path::Path::new(&path)).is_err());
 }
 
 #[test]

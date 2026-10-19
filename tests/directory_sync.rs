@@ -1,4 +1,4 @@
-use pi_agent::{app::State, config::Config, projects::call, sync::SyncService};
+use mindos_node::{app::State, config::Config, projects::call, sync::SyncService};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{io::Write, os::unix::fs::PermissionsExt, sync::Arc};
@@ -117,7 +117,7 @@ async fn preview(state: &Arc<State>) -> Value {
     .unwrap()["plan"]
         .clone()
 }
-async fn execute(state: &Arc<State>, id: &Value) -> Result<Value, pi_agent::core::error::Error> {
+async fn execute(state: &Arc<State>, id: &Value) -> Result<Value, mindos_node::core::error::Error> {
     call(
         state,
         0,

@@ -1,6 +1,6 @@
 #[path = "common/dsh.rs"]
 mod fixture;
-use pi_agent::{config::Config, harness::Harnesses};
+use mindos_node::{config::Config, harness::Harnesses};
 use serde_json::{json, Value};
 
 fn service(root: &std::path::Path, url: &str) -> Harnesses {
@@ -35,7 +35,7 @@ path={root:?}
     ))
     .unwrap();
     Harnesses::new(
-        pi_agent::harness::config::validate(&config).unwrap(),
+        mindos_node::harness::config::validate(&config).unwrap(),
         "epoch".into(),
     )
     .unwrap()
@@ -327,7 +327,7 @@ url="http://127.0.0.1:3080/"
 "#
     ))
     .unwrap();
-    assert!(pi_agent::harness::config::validate(&config)
+    assert!(mindos_node::harness::config::validate(&config)
         .err()
         .unwrap()
         .contains("projects = false"));

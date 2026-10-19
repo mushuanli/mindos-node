@@ -4,14 +4,14 @@ mod native;
 #[allow(dead_code)]
 #[path = "common/directory_acl.rs"]
 mod support;
-use pi_agent::{app::State, projects};
+use mindos_node::{app::State, projects};
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
 async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
     let directory = tempfile::Builder::new()
-        .prefix("pi-agent-dsh-")
+        .prefix("mindos-node-dsh-")
         .tempdir_in("/var/tmp")
         .unwrap();
     let (root, state) = support::fixture_at(directory);
@@ -24,12 +24,12 @@ async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
     let mut config = support::config(root.path(), false);
     config.execution = true;
     config.projects.as_mut().unwrap().network = true;
-    config.exports[0].grants[0].access = pi_agent::config::Access::Ro;
+    config.exports[0].grants[0].access = mindos_node::config::Access::Ro;
     config.exports[0].grants[0].execute = true;
     config.harnesses=vec![toml::from_str(&format!("id='dsh'\nkind='dsh'\nprincipal_id='alice'\nprojects=true\ncommand={command:?}\nhome={home:?}")).unwrap()];
     config.harnesses[0].aliases = vec!["old-dsh".into()];
     let state = State::from_config(&config).unwrap();
-    pi_agent::process::enable(&state).await.unwrap();
+    mindos_node::process::enable(&state).await.unwrap();
     let who = state.auth.index("alice").unwrap();
     let project = projects::call(
         &state,

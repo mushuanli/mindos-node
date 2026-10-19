@@ -1,6 +1,6 @@
 //! Workspace lease fencing: policy (`lease`) over an atomic journal.
 
-use pi_agent::workspace::lease::{LeaseError, LeaseRegistry, Owner};
+use mindos_node::workspace::lease::{LeaseError, LeaseRegistry, Owner};
 
 fn owner(instance: &str) -> Owner {
     Owner {

@@ -1,4 +1,4 @@
-use pi_agent::{app::State, config::Config};
+use mindos_node::{app::State, config::Config};
 use serde_json::Value;
 use std::{
     fs,
@@ -23,7 +23,7 @@ impl Fixture {
         Self { root, path }
     }
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_pi-agent"))
+        Command::new(env!("CARGO_BIN_EXE_mindos-node"))
             .args(["access", "--config"])
             .arg(&self.path)
             .args(args)
@@ -245,7 +245,7 @@ fn shares_basic_identity_and_credential_rotation_do_not_delete_data() {
 #[test]
 fn help_works_without_config_and_errors_do_not_echo_configuration_or_cli_secrets() {
     let f = Fixture::new();
-    let result = Command::new(env!("CARGO_BIN_EXE_pi-agent"))
+    let result = Command::new(env!("CARGO_BIN_EXE_mindos-node"))
         .args(["--help"])
         .current_dir(f.root.path())
         .output()
@@ -283,7 +283,7 @@ async fn cli_directory_grants_are_enforced_by_a_real_http_listener() {
     reader.token_env = None;
     reader.token = Some(READER.into());
     let state = State::from_config(&config).unwrap();
-    let app = pi_agent::router(state, &[]).unwrap();
+    let app = mindos_node::router(state, &[]).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {

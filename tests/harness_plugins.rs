@@ -1,7 +1,7 @@
 //! A second plugin proves dispatch, project scopes and receipts are not Codex-specific.
 use futures_util::future::BoxFuture;
-use pi_agent::projects::runtime::ProjectRuntime;
-use pi_agent::{
+use mindos_node::projects::runtime::ProjectRuntime;
+use mindos_node::{
     app::State,
     config::Config,
     core::error::Error,
@@ -169,21 +169,21 @@ fn profile_aliases_cannot_shadow_ids_or_other_aliases() {
     let (_root, mut config, plugins, _, _) = fixture();
     for aliases in [vec!["custom"], vec!["old", "old"], vec!["../bad"]] {
         config.harnesses[0].aliases = aliases.into_iter().map(String::from).collect();
-        assert!(pi_agent::harness::config::validate_with_plugins(&config, &plugins).is_err());
+        assert!(mindos_node::harness::config::validate_with_plugins(&config, &plugins).is_err());
     }
     config.harnesses[0].aliases = vec!["other".into()];
     let mut second = config.harnesses[0].clone();
     second.id = "other".into();
     second.aliases.clear();
     config.harnesses.push(second);
-    assert!(pi_agent::harness::config::validate_with_plugins(&config, &plugins).is_err());
+    assert!(mindos_node::harness::config::validate_with_plugins(&config, &plugins).is_err());
 }
 
 #[tokio::test]
 async fn project_scoped_driver_uses_the_registered_plugin() {
     let (_root, config, plugins, _executions, stops) = fixture();
     let state = State::from_config_with_plugins(&config, plugins).unwrap();
-    let registered = pi_agent::projects::call(
+    let registered = mindos_node::projects::call(
         &state,
         0,
         "project_register",
@@ -215,11 +215,11 @@ async fn project_scoped_driver_uses_the_registered_plugin() {
 #[test]
 fn validation_rejects_missing_duplicate_and_invalid_plugin_configuration() {
     let (_root, mut config, mut plugins, executions, stops) = fixture();
-    assert!(pi_agent::harness::config::validate(&config).is_err());
-    assert!(pi_agent::harness::config::validate_with_plugins(&config, &plugins).is_ok());
+    assert!(mindos_node::harness::config::validate(&config).is_err());
+    assert!(mindos_node::harness::config::validate_with_plugins(&config, &plugins).is_ok());
     assert!(plugins
         .register(Arc::new(FixturePlugin { executions, stops }))
         .is_err());
     config.harnesses[0].command = "unexpected".into();
-    assert!(pi_agent::harness::config::validate_with_plugins(&config, &plugins).is_err());
+    assert!(mindos_node::harness::config::validate_with_plugins(&config, &plugins).is_err());
 }

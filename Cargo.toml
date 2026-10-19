@@ -1,10 +1,10 @@
 [package]
-name = "pi-agent"
+name = "mindos-node"
 version = "0.3.7"
 edition = "2021"
 description = "MindOS personal intelligence node for controlled files, projects, sync and AI harness sessions"
-repository = "https://github.com/mushuanli/pi-agent"
-homepage = "https://github.com/mushuanli/pi-agent"
+repository = "https://github.com/mushuanli/mindos-node"
+homepage = "https://github.com/mushuanli/mindos-node"
 readme = "README.md"
 
 [dependencies]

@@ -1,4 +1,4 @@
-//! `pi-agent` — an authenticated HTTP file service with optional remote command
+//! `mindos-node` — an authenticated HTTP file service with optional remote command
 //! execution.
 //!
 //! # Layout
