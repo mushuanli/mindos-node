@@ -2,7 +2,7 @@
 
 mindos-node 将设备上的文件、项目和执行环境接入 MindOS，统一提供同步、受控访问及 AI harness 会话管理。MindOS 组织知识、对话和工作流，mindos-node 连接设备上的数据与执行能力。
 
-服务源码：[mindos-node](https://github.com/mushuanli/mindos-node)；统一客户端：[mindos-node-client](https://github.com/mushuanli/piagent-driver)，npm 包为 `@itookit/mindos-node-client`。
+服务源码：[mindos-node](https://github.com/mushuanli/mindos-node)；统一客户端：[mindos-node-driver](https://github.com/mushuanli/mindos-node-driver)，npm 包为 `@itookit/mindos-node-driver`。
 
 服务端目前支持 Linux（需要 `openat2`）；Web、Tauri 和 Node CLI 使用同一 HTTP 协议。服务启动时验证目录句柄能力，不支持时拒绝启动。
 
@@ -73,7 +73,7 @@ API：`GET /v1/exports`、`POST /v1/fs/:alias/stat`（`{paths}`）、`GET entrie
 
 ```bash
 cargo test                                  # 本项目根目录
-pnpm --filter @itookit/mindos-node-client test  # 在 itookit monorepo 内
+pnpm --filter @itookit/mindos-node-driver test  # 在 itookit monorepo 内
 ```
 
 驱动测试在 Linux 启动真实 Rust 服务，验证协议、条件保存和 VFS 适配；其他平台跳过该服务端集成测试。设计和验收边界见 [设计文档](../../doc/design/vfs-http-driver.md)。
@@ -192,7 +192,7 @@ retained_files = 5
 
 暂不声明 fork、永久删除、取消归档、附件或用量计价能力；这些操作由能力描述隐藏。断线后该驱动实例拒绝继续写入，重启 mindos-node 后可显式继续原生持久会话；不会自动重放未知操作。托管实例退出时回收其进程组，活动结果不明时按共同文件门闩机制拒绝继续访问。日志复用 mindos-node JSONL，记录生命周期与安全的 DSH 错误代码，不输出 URL 令牌、cookie、prompt 或原生错误正文。
 
-0.3.1 的真实连接验收使用已发布 mindos-node-client@0.2.0 → MCP → Rust DSH 驱动 → DSH 0.2.0-rc.2 → DeepSeek `deepseek-v4-flash`。验证新建、跨轮记忆、4 会话同时执行和流式增量隔离；SIGTERM 后托管 DSH 被回收，重启后继续原有会话仍保留上下文。共 10 个模型 turn 成功并持久记录 usage，测试会话全部归档。永久删除实际返回 ECAPABILITY 且保留会话，不计作删除成功。验收发现并修复用户绑定覆盖 CLI、新建 DTO 缺少 nullable updatedAt、SIGTERM 遗留原生写锁三个问题。
+0.3.1 的真实连接验收使用已发布 piagent-driver@0.2.0 → MCP → Rust DSH 驱动 → DSH 0.2.0-rc.2 → DeepSeek `deepseek-v4-flash`。验证新建、跨轮记忆、4 会话同时执行和流式增量隔离；SIGTERM 后托管 DSH 被回收，重启后继续原有会话仍保留上下文。共 10 个模型 turn 成功并持久记录 usage，测试会话全部归档。永久删除实际返回 ECAPABILITY 且保留会话，不计作删除成功。验收发现并修复用户绑定覆盖 CLI、新建 DTO 缺少 nullable updatedAt、SIGTERM 遗留原生写锁三个问题。
 
 节点处理 SIGINT 和 SIGTERM，先 fence 并回收所有托管 harness，再关闭文件与连接；DSH、Codex 和 Claude 共用这一关闭入口。已有外部 DSH 进程不归节点管理，不随节点停止。
 
@@ -227,7 +227,7 @@ Codex app-server 的 stdin 写入和 stdout 读取独立推进；大 prompt 的�
 ```bash
 cargo test --offline --manifest-path tools/mindos-node/Cargo.toml
 MINDOS_NODE_CODEX_TEST=1 cargo test --offline --manifest-path tools/mindos-node/Cargo.toml --test harness
-MINDOS_NODE_HARNESS_TEST=1 pnpm --filter @itookit/mindos-node-client test tests/network.test.ts
+MINDOS_NODE_HARNESS_TEST=1 pnpm --filter @itookit/mindos-node-driver test tests/network.test.ts
 ```
 
 第一项包含原生协议模拟测试；第二项用独立临时 CODEX_HOME 启动真实 Codex，只验证创建/历史，不调用模型，也不读取个人会话；第三项用真实 MCP SDK、Rust HTTP 服务和模拟 Codex 验证完整操作。
