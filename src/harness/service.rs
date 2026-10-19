@@ -318,12 +318,21 @@ impl Profile {
         }
     }
     async fn operation(&self, id: &str) -> Result<Value, Error> {
-        self.receipts
-            .lock()
-            .await
-            .get(id)
-            .map(|(_, receipt)| receipt.clone())
-            .ok_or_else(|| Error::not_found("ENOENT"))
+        if !crate::core::ids::is_identifier_within(id, 128) {
+            return Err(Error::invalid());
+        }
+        let mut receipts = self.receipts.lock().await;
+        if let Some((_, receipt)) = receipts.get(id) {
+            return Ok(receipt.clone());
+        }
+        if receipts.len() >= 1024 {
+            return Err(Error::too_many("HARNESS_OPERATION_LIMIT"));
+        }
+        // Fence a request that has not arrived, so a late transport cannot execute it.
+        let receipt =
+            json!({"outcome":"not-committed","requestId":id,"code":"HARNESS_REQUEST_NOT_STARTED"});
+        receipts.insert(id.into(), (String::new(), receipt.clone()));
+        Ok(receipt)
     }
     async fn execute(
         self: Arc<Self>,
@@ -352,7 +361,7 @@ impl Profile {
     async fn reserve(&self, id: &str, fingerprint: &str) -> Result<Option<Value>, Error> {
         let mut receipts = self.receipts.lock().await;
         if let Some((previous, receipt)) = receipts.get(id) {
-            if previous != fingerprint {
+            if !previous.is_empty() && previous != fingerprint {
                 return Err(Error::conflict("HARNESS_REQUEST_REUSED"));
             }
             return Ok(Some(receipt.clone()));

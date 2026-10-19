@@ -52,6 +52,40 @@ async fn mutate(service: &Harnesses, name: &str, id: &str, extra: Value) -> Valu
 }
 
 #[tokio::test]
+async fn reconciling_an_unreceived_request_fences_its_late_delivery() {
+    let root = tempfile::tempdir().unwrap();
+    let service = service(root.path());
+    let query = json!({"profileId":"codex","epoch":"epoch","requestId":"never-arrived"});
+    let receipt = service
+        .call("harness_operation", query.clone())
+        .await
+        .unwrap();
+    assert_eq!(receipt["outcome"], "not-committed");
+    assert_eq!(receipt["code"], "HARNESS_REQUEST_NOT_STARTED");
+    let late = mutate(
+        &service,
+        "harness_create",
+        "never-arrived",
+        json!({"workspaceId":"project"}),
+    )
+    .await;
+    assert_eq!(late, receipt);
+    assert_eq!(
+        service.call("harness_operation", query).await.unwrap(),
+        receipt
+    );
+    let sessions = service
+        .call(
+            "harness_sessions",
+            json!({"profileId":"codex","workspaceId":"project"}),
+        )
+        .await
+        .unwrap();
+    assert!(sessions["sessions"].as_array().unwrap().is_empty());
+    service.close().await;
+}
+
+#[tokio::test]
 async fn active_summary_refresh_recovers_a_long_answer_not_yet_flushed_to_history() {
     let root = tempfile::tempdir().unwrap();
     let service = service(root.path());

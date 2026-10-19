@@ -150,6 +150,7 @@ retained_files = 5
 - debug：文件变更/命令准入；info：启动就绪、变更提交、命令启动与成功结束、取消和关闭。
 - warn/error：认证拒绝、HTTP 错误、命令非零退出、超时、启动或清理失败；保留操作/请求 ID、状态和退出码。
 - 原生 Codex RPC 失败输出 `harness.native.failed`：method、rpcCode、稳定 code、durationMs，不记录原生错误全文。`HARNESS_SESSION_BUSY` 表示其他原生实例持有会话写入锁；`HARNESS_INVALID_PARAMS` 对应 -32602，其他未识别原生错误保留 `HARNESS_RPC_ERROR`。读取历史成功不代表能恢复写入。
+- Codex 后台可能在客户端离开后继续保留会话；写锁不证明某个前台客户端仍在使用，持久化 source 字段也不能识别当前锁持有者。锁拒绝后保留输入，不删除锁文件或强制并发写入。
 - 原生执行记录 `harness.turn.started/completed/failed`，流错误记录 `harness.stream.error`。保留 sessionId、turnId、状态、重试标记及原生提供的错误类别/HTTP 状态码；不复制消息、工具内容或原生错误正文。可与 `http.failed` 的路径、状态和时间对照，区分任务失败与文件接口繁忙。
 - 普通读取、stat、目录列表、能力查询及状态轮询成功时始终静默，包括 trace/debug。读取错误输出 `http.failed`。
 - 不输出 Authorization、口令、请求正文、命令正文或文件内容；命令输出仅记录字节数。进程结束记录是回收后的结果，HTTP 断线不冒充操作已取消。
@@ -164,6 +165,8 @@ retained_files = 5
 ## 原生 harness 控制中心（MCP 2.0）
 
 ### Harness 插件扩展
+
+`harness_operation` 按原 epoch/requestId 查询回执。当前 epoch 内尚未准入的请求返回 `not-committed` / `HARNESS_REQUEST_NOT_STARTED`，并在同一回执锁内保留拒绝记录，使迟到的同 ID 修改无法执行。已准入请求沿用原回执，执行中仍为 unknown；回执及拒绝记录共享每 profile 1024 项上限，空闲原生运行时回收不删除它们。旧 epoch 继续拒绝，不能从缺失记录推断旧执行结果。
 
 服务使用编译时注册的 `HarnessPlugin` / `HarnessPlugins` 插件接口。默认注册 Codex、Claude Code 和 DSH；`kind` 由注册表识别，未注册插件在启动验证时拒绝。插件负责原生协议、会话存储读取、进程初始化及统一会话/事件/交互格式，公共服务负责 epoch/requestId、回执、串行修改、项目授权、实例缓存和关闭。项目 launcher 接收插件指定的启动参数，不再固定 Codex 参数。
 

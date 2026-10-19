@@ -9,7 +9,8 @@ mod cases {
         let Ok(root) = std::env::var("MINDOS_NODE_SYNC_CHILD_ROOT") else {
             return;
         };
-        if std::env::var("MINDOS_NODE_SYNC_CRASH_AT").ok().as_deref() == Some("after-restore-copy") {
+        if std::env::var("MINDOS_NODE_SYNC_CRASH_AT").ok().as_deref() == Some("after-restore-copy")
+        {
             mindos_node::sync::admin(&[
                 "restore".into(),
                 std::env::var("MINDOS_NODE_SYNC_CHILD_CONFIG").unwrap(),

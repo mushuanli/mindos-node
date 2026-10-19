@@ -326,7 +326,8 @@ async fn native_project_bash_and_codex_share_directory_grants() {
     let started=call(&state,0,"project_exec",json!({"projectId":id,"revision":2,"epoch":state.execution.epoch(),"requestId":"bash","command":"/bin/bash","args":["-c","set -eu; test $(pwd) = /workspace; cat ref/guide; test ! -e /etc/passwd; if echo x > ref/guide 2>/dev/null; then exit 7; fi; echo project > note"],"timeoutMs":5000})).await.unwrap();
     assert!(started["process"].is_object());
     let result = loop {
-        let result = mindos_node::process::status(&state, 0, state.execution.epoch(), "bash").unwrap();
+        let result =
+            mindos_node::process::status(&state, 0, state.execution.epoch(), "bash").unwrap();
         if result.state != "running" {
             break result;
         }
