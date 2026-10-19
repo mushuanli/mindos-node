@@ -2,6 +2,87 @@ use pi_agent::{config::Config, harness::Harnesses};
 use serde_json::{json, Value};
 
 #[tokio::test]
+async fn idle_reaping_keeps_history_and_receipts_and_never_unloads_a_pending_dialog() {
+    let root = tempfile::tempdir().unwrap();
+    let service = fixture(root.path());
+    let created = mutate(
+        &service,
+        "harness_create",
+        "gc-create",
+        json!({"workspaceId":"workspace"}),
+    )
+    .await;
+    let id = created["result"]["session"]["id"].clone();
+    mutate(
+        &service,
+        "harness_turn",
+        "gc-turn",
+        json!({"sessionId":id,"prompt":"hello"}),
+    )
+    .await;
+    idle(&service, &id).await;
+    service
+        .reap_idle(std::time::Instant::now() + std::time::Duration::from_secs(301))
+        .await;
+    let cold = call(&service, "harness_session_info", json!({"sessionId":id})).await;
+    assert_eq!(cold["session"]["owned"], false);
+    assert_eq!(
+        call(
+            &service,
+            "harness_operation",
+            json!({"epoch":"epoch","requestId":"gc-turn"})
+        )
+        .await["outcome"],
+        "committed"
+    );
+    assert!(
+        !call(&service, "harness_session_read", json!({"sessionId":id})).await["turns"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        mutate(
+            &service,
+            "harness_resume",
+            "gc-resume",
+            json!({"sessionId":id})
+        )
+        .await["outcome"],
+        "committed"
+    );
+    mutate(
+        &service,
+        "harness_turn",
+        "gc-question",
+        json!({"sessionId":id,"prompt":"question"}),
+    )
+    .await;
+    for _ in 0..100 {
+        if !call(&service, "harness_events", json!({})).await["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    service
+        .reap_idle(std::time::Instant::now() + std::time::Duration::from_secs(3600))
+        .await;
+    let waiting = call(&service, "harness_events", json!({})).await;
+    assert_eq!(waiting["requests"][0]["id"], "question-request");
+    assert_eq!(
+        call(&service, "harness_session_info", json!({"sessionId":id})).await["session"]["owned"],
+        true
+    );
+    assert_eq!(mutate(&service, "harness_respond", "gc-answer", json!({"nativeRequestId":"question-request","response":{"answers":{"0":{"answers":["A"]}}}})).await["outcome"], "committed");
+    idle(&service, &id).await;
+    service.close().await;
+}
+
+#[tokio::test]
 async fn native_models_configure_the_session_before_sending_input() {
     let root = tempfile::tempdir().unwrap();
     let service = fixture(root.path());

@@ -427,6 +427,17 @@ impl HarnessDriver for Claude {
             process.close();
         }
     }
+    fn idle_since(&self) -> Option<std::time::Instant> {
+        if self
+            .sessions
+            .live()
+            .iter()
+            .any(|process| process.session.lock().unwrap()["activeTurnId"].is_string())
+        {
+            return None;
+        }
+        self.events.lock().unwrap().idle_since()
+    }
     fn drain(&self) -> BoxFuture<'_, ()> {
         Box::pin(self.sessions.drain())
     }

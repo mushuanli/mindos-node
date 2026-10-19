@@ -1,5 +1,5 @@
 use super::mutation_queue::MutationQueues;
-use super::{config::ProfileConfig, driver::HarnessDriver, HarnessPlugins};
+use super::{config::ProfileConfig, driver_slot::DriverSlot, HarnessPlugins};
 use crate::app::State;
 use crate::core::error::Error;
 use serde_json::{json, Value};
@@ -22,12 +22,40 @@ pub struct Harnesses {
     plugins: HarnessPlugins,
 }
 struct Profile {
-    driver: Box<dyn HarnessDriver>,
+    driver: DriverSlot,
     receipts: Mutex<BTreeMap<String, (String, Value)>>,
     mutations: MutationQueues,
 }
 
 impl Harnesses {
+    pub fn maintain(state: std::sync::Weak<crate::app::State>) {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
+                timer.tick().await;
+                loop {
+                    timer.tick().await;
+                    let Some(state) = state.upgrade() else {
+                        break;
+                    };
+                    if state.harness.closed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    state.harness.reap_idle(std::time::Instant::now()).await;
+                }
+            });
+        }
+    }
+    pub async fn reap_idle(&self, now: std::time::Instant) {
+        let ttl = std::time::Duration::from_secs(300);
+        let mut profiles: Vec<_> = self.profiles.values().cloned().collect();
+        profiles.extend(self.scoped.lock().await.values().cloned());
+        for profile in profiles {
+            if let Some(driver) = profile.driver.idle(now, ttl) {
+                driver.drain().await;
+            }
+        }
+    }
     pub fn new(configs: Vec<ProfileConfig>, epoch: String) -> Result<Self, String> {
         Self::with_plugins(configs, epoch, HarnessPlugins::default())
     }
@@ -43,7 +71,7 @@ impl Harnesses {
                 Ok((
                     config.id.clone(),
                     Arc::new(Profile {
-                        driver: plugins.create(config, None)?,
+                        driver: DriverSlot::new(plugins.clone(), config, None)?,
                         receipts: Mutex::new(BTreeMap::new()),
                         mutations: MutationQueues::default(),
                     }),
@@ -134,7 +162,7 @@ impl Harnesses {
             self.check_epoch(&args)?;
             return profile.mutate(name, args).await;
         }
-        profile.driver.read(name, args).await
+        profile.driver.get()?.read(name, args).await
     }
     pub async fn project_call(
         &self,
@@ -195,9 +223,7 @@ impl Harnesses {
             scoped.insert(
                 key.clone(),
                 Arc::new(Profile {
-                    driver: self
-                        .plugins
-                        .create(config.clone(), Some(runtime))
+                    driver: DriverSlot::new(self.plugins.clone(), config.clone(), Some(runtime))
                         .map_err(|_| Error::unsupported())?,
                     receipts: Mutex::new(BTreeMap::new()),
                     mutations: MutationQueues::default(),
@@ -214,7 +240,7 @@ impl Harnesses {
             self.check_epoch(&args)?;
             return profile.mutate(name, args).await;
         }
-        profile.driver.read(name, args).await
+        profile.driver.get()?.read(name, args).await
     }
     pub async fn close_project(&self, id: &str) {
         let profiles = {
@@ -321,7 +347,7 @@ impl Profile {
         } else {
             Some(self.mutations.acquire(name, args).await?)
         };
-        self.driver.execute(name, args).await
+        self.driver.get()?.execute(name, args).await
     }
     async fn reserve(&self, id: &str, fingerprint: &str) -> Result<Option<Value>, Error> {
         let mut receipts = self.receipts.lock().await;
@@ -382,6 +408,7 @@ fn is_mutation(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::driver::HarnessDriver;
     use futures_util::future::BoxFuture;
     use tokio::sync::Notify;
 
@@ -415,10 +442,10 @@ mod tests {
         harness.scoped.lock().await.insert(
             "slow:1:codex:false".into(),
             Arc::new(Profile {
-                driver: Box::new(SlowDrain {
+                driver: DriverSlot::testing(Box::new(SlowDrain {
                     entered: entered.clone(),
                     release: release.clone(),
-                }),
+                })),
                 receipts: Mutex::default(),
                 mutations: MutationQueues::default(),
             }),

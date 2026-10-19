@@ -205,7 +205,7 @@ fn permission(context: &mut Context, frame: Value) -> Result<(), Error> {
     let request = &frame["request"];
     let tool = request["tool_name"].as_str().unwrap_or("");
     let input = tool == "AskUserQuestion";
-    let questions=request["input"]["questions"].as_array().map(|qs|qs.iter().enumerate().map(|(i,q)|json!({"id":i.to_string(),"question":q["question"],"options":q["options"]})).collect::<Vec<_>>());
+    let questions=request["input"]["questions"].as_array().map(|qs|qs.iter().enumerate().map(|(i,q)|json!({"id":i.to_string(),"question":q["question"],"header":q["header"],"multiSelect":q["multiSelect"].as_bool().unwrap_or(false),"isOther":true,"options":q["options"]})).collect::<Vec<_>>());
     let method = if input {
         "item/tool/requestUserInput"
     } else if ["Edit", "Write", "NotebookEdit"].contains(&tool) {
@@ -213,7 +213,7 @@ fn permission(context: &mut Context, frame: Value) -> Result<(), Error> {
     } else {
         "item/commandExecution/requestApproval"
     };
-    context.events.lock().unwrap().push(json!({"id":id,"method":method,"params":{"threadId":context.id,"turnId":context.turn,"toolName":tool,"command":request["input"]["command"],"path":request["input"]["file_path"],"questions":questions}}))?;
+    context.events.lock().unwrap().push(json!({"id":id,"method":method,"params":{"threadId":context.id,"turnId":context.turn,"toolName":tool,"command":request["input"]["command"],"path":request["input"]["file_path"],"questions":questions,"decisions":["accept","decline","cancel"]}}))?;
     context.requests.insert(id, frame);
     Ok(())
 }

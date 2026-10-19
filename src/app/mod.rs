@@ -70,6 +70,9 @@ impl State {
             plugins,
         )?;
         Arc::get_mut(&mut state).unwrap().allowed_origins = config.allowed_origins.clone();
+        if state.harness.enabled() {
+            crate::harness::Harnesses::maintain(Arc::downgrade(&state));
+        }
         Ok(state)
     }
 

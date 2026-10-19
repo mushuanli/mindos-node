@@ -476,7 +476,10 @@ fn question_reply(original: &Value, response: &Value) -> Result<Value, Error> {
             .get(&index.to_string())
             .and_then(|v| v["answers"].as_array())
             .ok_or_else(Error::invalid)?;
-        if values.len() != 1 || !values[0].is_string() {
+        if values.is_empty()
+            || !values.iter().all(Value::is_string)
+            || question["multiSelect"] != true && values.len() != 1
+        {
             return Err(Error::invalid());
         }
         mapped.insert(
@@ -484,9 +487,29 @@ fn question_reply(original: &Value, response: &Value) -> Result<Value, Error> {
                 .as_str()
                 .ok_or_else(Error::invalid)?
                 .into(),
-            values[0].clone(),
+            json!(values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")),
         );
     }
     input["answers"] = Value::Object(mapped);
     Ok(json!({"behavior":"allow","updatedInput":input}))
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+    #[test]
+    fn converts_multiple_choices_without_accepting_multiple_answers_for_a_single_choice() {
+        let mut input = json!({"questions":[{"question":"Features","multiSelect":true}]});
+        let response = json!({"answers":{"0":{"answers":["A","B"]}}});
+        assert_eq!(
+            question_reply(&input, &response).unwrap()["updatedInput"]["answers"]["Features"],
+            "A, B"
+        );
+        input["questions"][0]["multiSelect"] = json!(false);
+        assert!(question_reply(&input, &response).is_err());
+    }
 }

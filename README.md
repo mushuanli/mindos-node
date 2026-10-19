@@ -258,6 +258,10 @@ MCP 提供 project_roots/list/read/register/configure/exec；harness 工具增�
 
 文件 discovery metadata 与原生 profile 的 `searchKeywords: true` 声明多关键字 AND：横向空白分词、顺序不限、忽略大小写，所有词须命中同一名称/路径、文件行或原生消息。显式换行仍为字面多行片段。文件内容只启动一次 rg，以最长字面词筛选候选，收集器验证全部词后再计入 100 条上限；多词时不按单个词的 rg `--max-count` 提前截断。Codex、Claude Code、DSH 的结构化历史共用同一匹配规则，私有上下文和角色筛选继续生效。
 
+原生运行时以项目/profile 为回收单位：连续空闲且没有访问 5 分钟后卸载，后台每 60 秒做一次内存检查。执行、未解决对话框与在途 driver 引用均阻止卸载；待回答不会自动取消。DriverSlot 保留元数据、授权与操作回执，释放进程/连接后按需重建；历史继续由 harness 原生存储提供。网页关闭不触发中断或删除，重新打开可继续显示尚存的交互。共享运行时中有任一活动会话时保留整个 driver，避免终止其他会话。
+
+执行中的 Codex 最新历史读取原生 `thread/read`，不优先使用尚未写完的 rollout 文件；更早历史与空闲历史保留文件分页。原生回复在有序 stdio 读取点捕获 `eventCursor: {after, eventEpoch}` 并随历史返回，客户端从该边界继续消费，避免长回答刷新、重开或事件缺口修复后重复拼接正文。
+
 目录范围通过 rg 的 `--ignore-file /dev/stdin` 在遍历阶段剪枝，规则随标准输入传入，不落盘、不经过 Shell，也不引入 fd。保留 `/workspace` 为遍历根，避免显式目录参数绕过隐藏、忽略或链接策略；项目自有忽略规则仍优先，输出再次校验目录范围。名称中的通配符按字面转义；隐藏目录、含换行的目录或规则超过 2 MiB 时保留原有遍历与结果过滤。rg 自行选择线程数，查询数量仍由四个工作槽限制。
 
 Codex、Claude Code、DSH 声明 capabilities.search 和 searchPrompts，`harness_session_search` 接收 profileId、可选 projectId/revision、query、mode（title/content/prompt）、archived。经授权列表和原生历史解析读取用户/assistant 文本与命令摘要，不递归扫描 home。最多 20 页列表、每会话 64 页历史、16 MiB、100 条、15 秒、2 并发。结果携带原生 session/turn/item 身份；超限 truncated=true，当前无续页。状态保留 statusDetails.activeFlags 和最近 turn 结果；notLoaded/未知枚举不推断已经完成，独立 CLI 的可读历史不代表本服务有控制权。

@@ -9,5 +9,9 @@ pub trait HarnessDriver: Send + Sync {
     fn execute<'a>(&'a self, name: &'a str, args: &'a Value)
         -> BoxFuture<'a, Result<Value, Error>>;
     fn stop(&self);
+    /// Conservative default: plugins must explicitly prove no execution or interaction is live.
+    fn idle_since(&self) -> Option<std::time::Instant> {
+        None
+    }
     fn drain(&self) -> BoxFuture<'_, ()>;
 }

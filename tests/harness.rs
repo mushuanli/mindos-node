@@ -52,6 +52,44 @@ async fn mutate(service: &Harnesses, name: &str, id: &str, extra: Value) -> Valu
 }
 
 #[tokio::test]
+async fn active_summary_refresh_recovers_a_long_answer_not_yet_flushed_to_history() {
+    let root = tempfile::tempdir().unwrap();
+    let service = service(root.path());
+    let created = mutate(
+        &service,
+        "harness_create",
+        "long-create",
+        json!({"workspaceId":"project"}),
+    )
+    .await;
+    let id = &created["result"]["session"]["id"];
+    mutate(
+        &service,
+        "harness_turn",
+        "long-turn",
+        json!({"sessionId":id,"prompt":"fixture:long-unflushed-response"}),
+    )
+    .await;
+    let read = json!({"profileId":"codex","sessionId":id,"toolDetail":"summary"});
+    let history = service
+        .call("harness_session_read", read.clone())
+        .await
+        .unwrap();
+    assert_eq!(history["turns"][0]["items"][0]["id"], "live-answer");
+    assert_eq!(
+        history["turns"][0]["items"][0]["text"],
+        "Long response segment. ".repeat(8192)
+    );
+    assert_eq!(history["session"]["activeTurnId"], "turn-1");
+    assert!(history["eventCursor"]["after"].as_u64().unwrap() > 1024);
+    let events = service.call("harness_events", json!({"profileId":"codex","after":history["eventCursor"]["after"],"eventEpoch":history["eventCursor"]["eventEpoch"]})).await.unwrap();
+    assert_eq!(events["events"], json!([]));
+    let reopened = service.call("harness_session_read", read).await.unwrap();
+    assert_eq!(reopened["turns"], history["turns"]);
+    service.close().await;
+}
+
+#[tokio::test]
 async fn models_are_discovered_and_validated_before_native_turn_submission() {
     let root = tempfile::tempdir().unwrap();
     let service = service(root.path());

@@ -8,6 +8,7 @@ mod commands;
 pub mod config;
 mod diagnostics;
 mod driver;
+mod driver_slot;
 mod dsh;
 mod environment;
 mod events;

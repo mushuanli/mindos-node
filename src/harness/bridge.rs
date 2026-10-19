@@ -331,7 +331,11 @@ fn dispatch(message: Value, pending: &PendingCalls, events: &Mutex<Events>) -> R
             );
             Err(error)
         } else {
-            Ok(message["result"].clone())
+            let mut result = message["result"].clone();
+            if reply.method == "thread/read" && result.is_object() {
+                result["_piAgentEventCursor"] = events.lock().unwrap().position();
+            }
+            Ok(result)
         };
         let _ = reply.reply.send(result);
     }

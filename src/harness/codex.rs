@@ -37,6 +37,7 @@ pub struct Codex {
     bridge: Mutex<Option<Arc<Bridge>>>,
     pub(super) owned: Mutex<HashSet<String>>,
     closed: AtomicBool,
+    created: std::time::Instant,
     usage: Arc<super::usage::Reader>,
 }
 impl Codex {
@@ -48,6 +49,7 @@ impl Codex {
             bridge: Mutex::new(None),
             owned: Mutex::new(HashSet::new()),
             closed: AtomicBool::new(false),
+            created: std::time::Instant::now(),
             usage: Arc::default(),
         }
     }
@@ -97,11 +99,24 @@ impl Codex {
             }
             "harness_events" => {
                 let after = args["after"].as_u64().unwrap_or(0);
-                let page = bridge
+                let mut page = bridge
                     .events
                     .lock()
                     .unwrap()
                     .page(args["eventEpoch"].as_str(), after);
+                for request in page["requests"].as_array_mut().into_iter().flatten() {
+                    if matches!(
+                        request["method"].as_str(),
+                        Some(
+                            "item/commandExecution/requestApproval"
+                                | "item/fileChange/requestApproval"
+                        )
+                    ) && request["params"]["availableDecisions"].is_null()
+                    {
+                        request["params"]["decisions"] =
+                            json!(["accept", "acceptForSession", "decline", "cancel"]);
+                    }
+                }
                 Ok(if args["toolDetail"] == "summary" {
                     super::presentation::events(page)
                 } else {
@@ -378,9 +393,18 @@ impl Codex {
         if !args["cursor"].is_string() {
             super::usage::attach(&mut session, self.thread_usage(&thread).await);
         }
-        Ok(json!({"session":session,"turns":page["turns"],"nextCursor":page["nextCursor"]}))
+        let mut result =
+            json!({"session":session,"turns":page["turns"],"nextCursor":page["nextCursor"]});
+        if page["eventCursor"].is_object() {
+            result["eventCursor"] = page["eventCursor"].clone();
+        }
+        Ok(result)
     }
     async fn page(&self, bridge: &Bridge, thread: &Value, args: &Value) -> Result<Value, Error> {
+        // Rollout files may not contain the answer while the native turn is streaming.
+        if !args["cursor"].is_string() && thread["status"]["type"] == "active" {
+            return self.native_page(bridge, thread, args).await;
+        }
         if args["toolDetail"] == "summary" && thread["path"].is_string() {
             match self.rollout(thread, args).await {
                 Ok(page) => return Ok(page),
@@ -438,7 +462,9 @@ impl Codex {
                 )
                 .await
             {
-                Ok(full) => json!({"turns":full["thread"]["turns"],"nextCursor":null}),
+                Ok(full) => {
+                    json!({"turns":full["thread"]["turns"],"nextCursor":null,"eventCursor":full["_piAgentEventCursor"]})
+                }
                 Err(error) if error.code == "HARNESS_HISTORY_PENDING" => {
                     json!({"turns":[],"nextCursor":null})
                 }
@@ -554,6 +580,13 @@ impl HarnessDriver for Codex {
     }
     fn stop(&self) {
         self.closed.store(true, Ordering::Release);
+    }
+    fn idle_since(&self) -> Option<std::time::Instant> {
+        let bridge = self.bridge.try_lock().ok()?;
+        match bridge.as_ref() {
+            Some(bridge) => bridge.events.lock().unwrap().idle_since(),
+            None => Some(self.created),
+        }
     }
     fn drain(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {

@@ -12,6 +12,8 @@ pub struct Events {
     bytes: usize,
     entries: VecDeque<(u64, Value, usize, i64)>,
     pub requests: HashMap<String, Value>,
+    active: std::collections::HashSet<String>,
+    last_activity: std::time::Instant,
 }
 
 impl Events {
@@ -25,6 +27,8 @@ impl Events {
             bytes: 0,
             entries: VecDeque::new(),
             requests: HashMap::new(),
+            active: std::collections::HashSet::new(),
+            last_activity: std::time::Instant::now(),
         }
     }
     pub fn push(&mut self, message: Value) -> Result<(), Error> {
@@ -33,6 +37,7 @@ impl Events {
             return Err(Error::too_large("EFBIG"));
         }
         self.track(&message)?;
+        self.last_activity = std::time::Instant::now();
         if let Some(runtime) = &self.runtime {
             runtime.event(&message);
         }
@@ -53,6 +58,27 @@ impl Events {
         Ok(())
     }
     fn track(&mut self, message: &Value) -> Result<(), Error> {
+        if let Some(id) = message["params"]["threadId"].as_str() {
+            match message["method"].as_str() {
+                Some("turn/started") => {
+                    self.active.insert(id.into());
+                }
+                Some("turn/completed" | "harness/disconnected") => {
+                    self.active.remove(id);
+                }
+                Some("thread/status/changed") => {
+                    if message["params"]["status"]["type"] == "active" {
+                        self.active.insert(id.into());
+                    } else if matches!(
+                        message["params"]["status"]["type"].as_str(),
+                        Some("idle" | "notLoaded")
+                    ) {
+                        self.active.remove(id);
+                    }
+                }
+                _ => (),
+            }
+        }
         if message.get("method").is_some() && message.get("id").is_some() {
             let retained: usize = self
                 .requests
@@ -92,11 +118,37 @@ impl Events {
         json!({"epoch":self.epoch,"cursor":cursor,"gap":gap,"events":events,
             "requests":self.requests.values().collect::<Vec<_>>()})
     }
+    pub fn position(&self) -> Value {
+        json!({"after":self.next,"eventEpoch":self.epoch})
+    }
+    pub fn idle_since(&self) -> Option<std::time::Instant> {
+        (self.active.is_empty() && self.requests.is_empty()).then_some(self.last_activity)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn execution_and_pending_dialogs_pin_the_runtime_until_explicit_resolution() {
+        let mut events = Events::new();
+        assert!(events.idle_since().is_some());
+        events
+            .push(json!({"method":"turn/started","params":{"threadId":"s"}}))
+            .unwrap();
+        assert!(events.idle_since().is_none());
+        events
+            .push(json!({"id":"q","method":"item/tool/requestUserInput","params":{"threadId":"s"}}))
+            .unwrap();
+        events
+            .push(json!({"method":"turn/completed","params":{"threadId":"s"}}))
+            .unwrap();
+        assert!(events.idle_since().is_none());
+        events
+            .push(json!({"method":"serverRequest/resolved","params":{"requestId":"q"}}))
+            .unwrap();
+        assert!(events.idle_since().is_some());
+    }
     #[test]
     fn reports_replay_gaps_and_epoch_reset() {
         let mut events = Events::new();

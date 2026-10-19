@@ -71,7 +71,7 @@ fn waterfall(
     };
     let turn = live.unwrap().cursor.lock().unwrap().turn.clone();
     events.lock().unwrap().push(json!({"id":id,"method":method,"params":{"threadId":session,"turnId":turn,
-        "questions":frame["request"]["questions"],"reason":frame["request"]["displayReason"],"toolName":frame["request"]["toolName"]},
+        "questions":frame["request"]["questions"],"reason":frame["request"]["displayReason"],"toolName":frame["request"]["toolName"],"decisions":["accept","decline"]},
         "dshClientId":client_id,"dshEvent":frame["event"]}))
 }
 fn delegate(client: &Arc<Client>, client_id: &str, id: &str) -> Result<(), Error> {

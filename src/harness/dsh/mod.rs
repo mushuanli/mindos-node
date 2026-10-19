@@ -143,6 +143,18 @@ impl HarnessDriver for Dsh {
     fn stop(&self) {
         self.stop.cancel();
     }
+    fn idle_since(&self) -> Option<std::time::Instant> {
+        if self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .any(|live| !live.cursor.lock().unwrap().turn.is_empty())
+        {
+            return None;
+        }
+        self.events.lock().unwrap().idle_since()
+    }
     fn drain(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.stop.cancel();

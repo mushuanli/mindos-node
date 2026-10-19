@@ -79,6 +79,21 @@ for line in sys.stdin:
         result = {'turn': {'id': turn_id}}
         thread_id = params['threadId']
         threads[thread_id]['status'] = {'type': 'active'}
+        if params['input'][0]['text'] == 'fixture:long-unflushed-response':
+            home = os.environ.get('CODEX_HOME', threads[thread_id]['cwd'])
+            directory = os.path.join(home, 'sessions')
+            os.makedirs(directory, exist_ok=True)
+            path = os.path.join(directory, 'fixture-live.jsonl')
+            with open(path, 'w') as history:
+                history.write(json.dumps({'type': 'response_item', 'payload': {'id': 'old', 'type': 'message', 'role': 'assistant', 'content': [{'text': 'Persisted earlier answer'}]}}) + '\n')
+            threads[thread_id]['path'] = path
+            text = 'Long response segment. ' * 8192
+            threads[thread_id]['turns'] = [{'id': turn_id, 'status': 'inProgress', 'items': [{'id': 'live-answer', 'type': 'agentMessage', 'text': text}]}]
+            emit({'id': request['id'], 'result': result})
+            emit({'method': 'turn/started', 'params': {'threadId': thread_id, 'turn': {'id': turn_id}}})
+            for offset in range(0, len(text), 128):
+                emit({'method': 'item/agentMessage/delta', 'params': {'threadId': thread_id, 'turnId': turn_id, 'itemId': 'live-answer', 'delta': text[offset:offset + 128]}})
+            continue
         if params['input'][0]['text'] == 'complete-before-start-reply':
             threads[thread_id]['status'] = {'type': 'idle'}
             emit({'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': turn_id, 'status': 'completed'}}})
