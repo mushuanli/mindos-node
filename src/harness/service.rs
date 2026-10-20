@@ -1,4 +1,5 @@
 use super::mutation_queue::MutationQueues;
+use super::receipts::{ReceiptScope, Receipts, Reservation};
 use super::{config::ProfileConfig, driver_slot::DriverSlot, HarnessPlugins};
 use crate::app::State;
 use crate::core::error::Error;
@@ -20,10 +21,11 @@ pub struct Harnesses {
     epoch: String,
     closed: AtomicBool,
     plugins: HarnessPlugins,
+    receipts: Arc<Receipts>,
 }
 struct Profile {
     driver: DriverSlot,
-    receipts: Mutex<BTreeMap<String, (String, Value)>>,
+    receipts: ReceiptScope,
     mutations: MutationQueues,
 }
 
@@ -64,15 +66,17 @@ impl Harnesses {
         epoch: String,
         plugins: HarnessPlugins,
     ) -> Result<Self, String> {
+        let receipts = Receipts::new()?;
         let profiles = configs
             .clone()
             .into_iter()
             .map(|config| {
+                let scope = receipts.scoped(json!(["installation", config.id]).to_string());
                 Ok((
                     config.id.clone(),
                     Arc::new(Profile {
                         driver: DriverSlot::new(plugins.clone(), config, None)?,
-                        receipts: Mutex::new(BTreeMap::new()),
+                        receipts: scope,
                         mutations: MutationQueues::default(),
                     }),
                 ))
@@ -85,6 +89,7 @@ impl Harnesses {
             epoch,
             closed: AtomicBool::new(false),
             plugins,
+            receipts,
         })
     }
     pub fn enabled(&self) -> bool {
@@ -186,6 +191,27 @@ impl Harnesses {
             .get(identity, string(&args, "projectId")?)?;
         crate::projects::service::authorize(state, identity, &project)?;
         project = crate::projects::service::effective(state, identity, &project);
+        let config = self
+            .configs
+            .iter()
+            .find(|p| p.id == string(&args, "profileId").unwrap_or("") && p.projects)
+            .ok_or_else(Error::unsupported)?;
+        let receipts = self
+            .receipts
+            .scoped(json!(["project", project.owner, project.id, args["profileId"]]).to_string());
+        if name == "harness_operation" {
+            self.check_epoch(&args)?;
+            return receipts.operation(string(&args, "requestId")?).await;
+        }
+        if is_mutation(name) {
+            self.check_epoch(&args)?;
+            if let Some(receipt) = receipts
+                .existing(string(&args, "requestId")?, fingerprint(name, &args))
+                .await?
+            {
+                return Ok(receipt);
+            }
+        }
         if is_mutation(name)
             && crate::projects::service::mounts(&project)
                 .iter()
@@ -196,11 +222,6 @@ impl Harnesses {
         if args["revision"].as_u64() != Some(project.revision) {
             return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
         }
-        let config = self
-            .configs
-            .iter()
-            .find(|p| p.id == string(&args, "profileId").unwrap_or("") && p.projects)
-            .ok_or_else(Error::unsupported)?;
         let read_only = args["readOnly"].as_bool().unwrap_or(false);
         if read_only {
             project.access = "ro".into();
@@ -225,17 +246,13 @@ impl Harnesses {
                 Arc::new(Profile {
                     driver: DriverSlot::new(self.plugins.clone(), config.clone(), Some(runtime))
                         .map_err(|_| Error::unsupported())?,
-                    receipts: Mutex::new(BTreeMap::new()),
+                    receipts,
                     mutations: MutationQueues::default(),
                 }),
             );
         }
         let profile = scoped[&key].clone();
         drop(scoped);
-        if name == "harness_operation" {
-            self.check_epoch(&args)?;
-            return profile.operation(string(&args, "requestId")?).await;
-        }
         if is_mutation(name) {
             self.check_epoch(&args)?;
             return profile.mutate(name, args).await;
@@ -299,55 +316,35 @@ impl Profile {
         if !crate::core::ids::is_identifier_within(&id, 128) {
             return Err(Error::invalid());
         }
-        let fingerprint = format!(
-            "{:x}",
-            Sha256::digest(json!([name, args]).to_string().as_bytes())
-        );
-        if let Some(receipt) = self.reserve(&id, &fingerprint).await? {
-            return Ok(receipt);
-        }
+        let permit = match self.receipts.reserve(&id, fingerprint(name, &args)).await? {
+            Reservation::Existing(receipt) => return Ok(receipt),
+            Reservation::New(permit) => permit,
+        };
         // Execution outlives an HTTP disconnect; queries can confirm a later result.
-        let work =
-            tokio::spawn(
-                self.clone()
-                    .execute(name.to_owned(), args, id.clone(), fingerprint),
-            );
+        let work = tokio::spawn(
+            self.clone()
+                .execute(name.to_owned(), args, id.clone(), permit),
+        );
         match tokio::time::timeout(std::time::Duration::from_secs(25), work).await {
             Ok(Ok(value)) => Ok(value),
             _ => Ok(json!({"outcome":"unknown","requestId":id})),
         }
     }
     async fn operation(&self, id: &str) -> Result<Value, Error> {
-        if !crate::core::ids::is_identifier_within(id, 128) {
-            return Err(Error::invalid());
-        }
-        let mut receipts = self.receipts.lock().await;
-        if let Some((_, receipt)) = receipts.get(id) {
-            return Ok(receipt.clone());
-        }
-        if receipts.len() >= 1024 {
-            return Err(Error::too_many("HARNESS_OPERATION_LIMIT"));
-        }
-        // Fence a request that has not arrived, so a late transport cannot execute it.
-        let receipt =
-            json!({"outcome":"not-committed","requestId":id,"code":"HARNESS_REQUEST_NOT_STARTED"});
-        receipts.insert(id.into(), (String::new(), receipt.clone()));
-        Ok(receipt)
+        self.receipts.operation(id).await
     }
     async fn execute(
         self: Arc<Self>,
         name: String,
         args: Value,
         id: String,
-        fingerprint: String,
+        _permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Value {
         let result = self.execute_native(&name, &args).await;
         let receipt = receipt(&id, result);
-        self.receipts
-            .lock()
-            .await
-            .insert(id, (fingerprint, receipt.clone()));
-        receipt
+        self.receipts.finish(&id, receipt).await.unwrap_or_else(
+            |_| json!({"outcome":"unknown","requestId":id,"code":"HARNESS_RECEIPT_STORAGE"}),
+        )
     }
     async fn execute_native(&self, name: &str, args: &Value) -> Result<Value, Error> {
         // Replies and interruption must pass a start/resume waiting on native approval.
@@ -357,26 +354,6 @@ impl Profile {
             Some(self.mutations.acquire(name, args).await?)
         };
         self.driver.get()?.execute(name, args).await
-    }
-    async fn reserve(&self, id: &str, fingerprint: &str) -> Result<Option<Value>, Error> {
-        let mut receipts = self.receipts.lock().await;
-        if let Some((previous, receipt)) = receipts.get(id) {
-            if !previous.is_empty() && previous != fingerprint {
-                return Err(Error::conflict("HARNESS_REQUEST_REUSED"));
-            }
-            return Ok(Some(receipt.clone()));
-        }
-        if receipts.len() >= 1024 {
-            return Err(Error::too_many("HARNESS_OPERATION_LIMIT"));
-        }
-        receipts.insert(
-            id.into(),
-            (
-                fingerprint.into(),
-                json!({"outcome":"unknown","requestId":id}),
-            ),
-        );
-        Ok(None)
     }
 }
 
@@ -388,6 +365,12 @@ fn receipt(id: &str, result: Result<Value, Error>) -> Value {
                 "requestId":id,"code":error.code})
         }
     }
+}
+fn fingerprint(name: &str, args: &Value) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(json!([name, args]).to_string().as_bytes())
+    )
 }
 
 pub(super) fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
@@ -455,7 +438,7 @@ mod tests {
                     entered: entered.clone(),
                     release: release.clone(),
                 })),
-                receipts: Mutex::default(),
+                receipts: harness.receipts.scoped("slow-test".into()),
                 mutations: MutationQueues::default(),
             }),
         );

@@ -64,6 +64,93 @@ async fn interrupt(state: &Arc<State>, base: &Value, id: &str, session: &Value, 
 }
 
 #[tokio::test]
+async fn project_receipts_survive_noop_remount_and_revision_changes() {
+    let (_root, state, base) = fixture().await;
+    create(&state, &base, "stable-create").await;
+    let receipt = invoke(
+        &state,
+        &base,
+        "harness_operation",
+        "stable-create",
+        json!({}),
+    )
+    .await;
+    for access in ["rw", "ro"] {
+        call(
+            &state,
+            0,
+            "project_remount",
+            json!({"projectId":base["projectId"],"revision":base["revision"],"access":access}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            invoke(
+                &state,
+                &base,
+                "harness_operation",
+                "stable-create",
+                json!({})
+            )
+            .await,
+            receipt
+        );
+    }
+    let mut current = base.clone();
+    current["revision"] = json!(2);
+    assert_eq!(
+        invoke(
+            &state,
+            &current,
+            "harness_operation",
+            "stable-create",
+            json!({"readOnly":true})
+        )
+        .await,
+        receipt
+    );
+    assert_eq!(state.harness.profiles()["epoch"], base["epoch"]);
+    assert_eq!(
+        invoke(
+            &state,
+            &base,
+            "harness_create",
+            "stable-create",
+            json!({"workspaceId":base["projectId"]})
+        )
+        .await,
+        receipt
+    );
+    state.harness.close().await;
+}
+
+#[tokio::test]
+async fn failed_configuration_preserves_receipts_and_never_repeats_a_native_create() {
+    let (_root, state, base) = fixture().await;
+    let first = invoke(
+        &state,
+        &base,
+        "harness_create",
+        "stable-create",
+        json!({"workspaceId":base["projectId"]}),
+    )
+    .await;
+    assert!(call(&state, 0, "project_configure", json!({"projectId":base["projectId"],"revision":base["revision"],"name":"Invalid","mounts":[{"alias":"missing","path":"","at":"/workspace/ref","access":"ro"}]})).await.is_err());
+    assert_eq!(
+        invoke(
+            &state,
+            &base,
+            "harness_create",
+            "stable-create",
+            json!({"workspaceId":base["projectId"]})
+        )
+        .await,
+        first
+    );
+    state.harness.close().await;
+}
+
+#[tokio::test]
 async fn project_turns_overlap_keep_independent_receipts_and_protect_files_until_the_last_completion(
 ) {
     let (_root, state, base) = fixture().await;

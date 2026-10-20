@@ -1,6 +1,6 @@
 [package]
 name = "mindos-node"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 description = "MindOS personal intelligence node for controlled files, projects, sync and AI harness sessions"
 repository = "https://github.com/mushuanli/mindos-node"

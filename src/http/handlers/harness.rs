@@ -164,12 +164,23 @@ async fn call(state: &Arc<State>, identity: usize, params: &Value) -> Value {
     let (value, error) = match result {
         Ok(value) => (value, false),
         Err(e) => (
-            json!({"code":e.code,"outcome":if name.starts_with("project_sync_") && (name=="project_sync_execute" || e.status.is_server_error()) {"unknown"}else{"not-committed"}}),
+            json!({"code":e.code,"outcome":error_outcome(name, e)}),
             true,
         ),
     };
     json!({"resultType":"complete","isError":error,"structuredContent":value,
         "content":[{"type":"text","text":value.to_string()}]})
+}
+
+fn error_outcome(name: &str, error: Error) -> &'static str {
+    if error.code == "HARNESS_RECEIPT_STORAGE"
+        || name.starts_with("project_sync_")
+            && (name == "project_sync_execute" || error.status.is_server_error())
+    {
+        "unknown"
+    } else {
+        "not-committed"
+    }
 }
 
 fn capabilities(state: &State, identity: usize) -> Value {
@@ -479,6 +490,20 @@ fn tool(name: &str, description: &str, required: Vec<&str>) -> Value {
 
 #[cfg(test)]
 mod schema_tests {
+    #[test]
+    fn receipt_storage_failure_never_claims_the_native_effect_was_not_committed() {
+        let error = super::Error::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "HARNESS_RECEIPT_STORAGE",
+        );
+        for operation in ["harness_create", "harness_turn", "harness_operation"] {
+            assert_eq!(super::error_outcome(operation, error), "unknown");
+        }
+        assert_eq!(
+            super::error_outcome("harness_turn", super::Error::invalid()),
+            "not-committed"
+        );
+    }
     #[test]
     fn every_required_tool_argument_has_a_schema() {
         for tool in super::tools() {

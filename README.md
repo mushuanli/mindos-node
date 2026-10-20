@@ -166,7 +166,11 @@ retained_files = 5
 
 ### Harness 插件扩展
 
-`harness_operation` 按原 epoch/requestId 查询回执。当前 epoch 内尚未准入的请求返回 `not-committed` / `HARNESS_REQUEST_NOT_STARTED`，并在同一回执锁内保留拒绝记录，使迟到的同 ID 修改无法执行。已准入请求沿用原回执，执行中仍为 unknown；回执及拒绝记录共享每 profile 1024 项上限，空闲原生运行时回收不删除它们。旧 epoch 继续拒绝，不能从缺失记录推断旧执行结果。
+`harness_operation` 按原 epoch/requestId 查询回执。当前 epoch 内尚未准入的请求返回 `not-committed` / `HARNESS_REQUEST_NOT_STARTED`，并原子保留拒绝记录，使迟到的同 ID 修改无法执行。已准入请求沿用原回执，执行中仍为 unknown。
+
+回执账本与原生运行时独立：项目回执按稳定 owner、projectId 和规范 profileId 隔离，不按目录 revision 或 readOnly 分库。重新挂载、配置失败及空闲回收不会删除回执；查询核对当前主体与项目授权，允许查询原 revision 的操作，但不允许借此执行过期授权下的新请求。同一 requestId 更换正文仍拒绝。
+
+账本使用当前服务 epoch 内的私有 SQLite 临时库，数据库缓存预算 2 MiB、主库上限 256 MiB；不再按已完成操作的累计条数拒写。1024 项限制改为整个 harness 服务正在执行的修改操作数，执行收尾后归还名额；回执查询不占执行名额。数据库满或存储故障不清除防重身份；返回 `HARNESS_RECEIPT_STORAGE` / unknown，已准入操作保留未知记录，不能重发。临时库不提供跨服务重启恢复：新进程使用新 epoch，旧 epoch 继续拒绝，不能从缺失记录推断旧执行结果。
 
 服务使用编译时注册的 `HarnessPlugin` / `HarnessPlugins` 插件接口。默认注册 Codex、Claude Code 和 DSH；`kind` 由注册表识别，未注册插件在启动验证时拒绝。插件负责原生协议、会话存储读取、进程初始化及统一会话/事件/交互格式，公共服务负责 epoch/requestId、回执、串行修改、项目授权、实例缓存和关闭。项目 launcher 接收插件指定的启动参数，不再固定 Codex 参数。
 
@@ -212,7 +216,7 @@ Web/Tauri 在工具箱 MCP 配置并测试连接后，在支持 harness 的 mind
 
 `harness_fork` 调用原生 `thread/fork`，可选名称经 `thread/name/set` 保存，返回 `parentSessionId`。仅授权项目的可写会话允许创建分支；空会话、活动会话和未知结果期间 UI 禁用创建。分支创建同样携带 epoch/requestId，并以回执避免重放。分支是独立的原生会话，历史保留在 harness home。
 
-限制：每 profile 1024 条进程内修改收据、128 个 pending 调用/交互、事件环最多 1024 项/8 MiB、待审批总量最多 8 MiB、每轮提示最多 128 KiB、原生单行最多 8 MiB；客户端 MCP 响应最多 32 MiB。输出 gap 显示需要刷新历史。发送结果未知不重放；epoch 改变表示服务已重启，旧收据不再可确认。app-server 退出后本 profile 拒绝继续写入；需服务重启重新发现，避免悄悄失去接管关系。服务关闭回收监管进程组；主动脱离该组的后代不属于此回收保证。
+限制：harness 服务最多 1024 个同时执行的修改操作，回执临时主库最多 256 MiB；每原生运行时 128 个 pending 调用/交互、事件环最多 1024 项/8 MiB、待审批总量最多 8 MiB、每轮提示最多 128 KiB、原生单行最多 8 MiB；客户端 MCP 响应最多 32 MiB。输出 gap 显示需要刷新历史。发送结果未知不重放；epoch 改变表示服务已重启，旧收据不再可确认。app-server 退出后本 profile 拒绝继续写入；需服务重启重新发现，避免悄悄失去接管关系。服务关闭回收监管进程组；主动脱离该组的后代不属于此回收保证。
 
 项目模式允许同一项目或不同项目的多个原生会话同时执行，每个项目 profile 最多 128 个活动 turn。同一会话仍只允许一个活动 turn，提交队列按会话串行；一个会话等待启动审批不阻塞其他会话。原生子树归档和删除与所有在途提交互斥，审批回复和中断继续旁路，以免等待中的启动无法完成。
 

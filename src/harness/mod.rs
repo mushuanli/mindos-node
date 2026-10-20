@@ -16,6 +16,7 @@ mod history;
 mod models;
 mod plugins;
 mod presentation;
+mod receipts;
 mod search;
 mod service;
 mod usage;
