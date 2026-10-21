@@ -24,17 +24,16 @@
 
 pub mod admin;
 pub mod app;
-pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod core;
-pub mod fs;
-pub mod harness;
 pub mod http;
-pub mod operations;
-pub mod process;
-pub mod projects;
-pub mod sync;
-pub mod workspace;
+pub use plugin::common::workspace;
 
 pub use http::router;
+
+pub mod plugin;
+pub use core::auth;
+pub use plugin::common as plugins;
+pub use plugin::files::{fs, operations};
+pub use plugin::{harness, process, projects, sync};

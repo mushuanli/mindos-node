@@ -4,7 +4,7 @@
 //! Shutdown has two stages because a graceful stop has two waits:
 //!
 //! 1. stop admitting commands and let in-flight file work finish, bounded by
-//!    [`DRAIN_TIMEOUT`];
+//!    each plugin drain deadline;
 //! 2. let open connections end on their own, bounded by [`CONNECTION_GRACE`].
 //!
 //! The second bound exists because a stalled download would otherwise keep the
@@ -13,14 +13,12 @@
 //! allowed to exit.
 
 use mindos_node::core::events::emit;
-use mindos_node::{app::State, config::launch, process, router};
+use mindos_node::{app::Application, config::launch};
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 
 mod startup;
 
-/// Upper bound on how long shutdown waits for in-flight file work.
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Upper bound on how long open connections may take to finish afterwards.
 const CONNECTION_GRACE: Duration = Duration::from_secs(5);
 
@@ -33,7 +31,7 @@ async fn main() -> std::process::ExitCode {
                 mindos_node::core::events::Level::Error,
                 if std::env::args()
                     .nth(1)
-                    .is_some_and(|arg| arg == "access" || arg == "sync")
+                    .is_some_and(|arg| arg == "access" || arg == "sync" || arg == "plugins")
                 {
                     "cli.command_failed"
                 } else {
@@ -63,6 +61,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     eprintln!("mindos-node {}", env!("CARGO_PKG_VERSION"));
+    if args.first().is_some_and(|arg| arg == "plugins") {
+        return mindos_node::cli::plugins(&args[1..]).map_err(Into::into);
+    }
     if args.first().is_some_and(|arg| arg == "access") {
         return mindos_node::cli::access(&args[1..]).map_err(Into::into);
     }
@@ -82,33 +83,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "server.starting",
         json!({"version": env!("CARGO_PKG_VERSION"), "config": path, "logFile": log_file}),
     );
-    let state = State::from_config(&config)?;
-    // Advertise execution only after the sandbox has been proven to work.
-    if config.execution {
-        emit(
-            mindos_node::core::events::Level::Debug,
-            "sandbox.probing",
-            json!({}),
-        );
-        process::enable(&state).await?;
-        emit(
-            mindos_node::core::events::Level::Info,
-            "sandbox.ready",
-            json!({}),
-        );
-    }
-    if let Some(sync) = &state.sync {
-        sync.start_maintenance();
-    }
-    let app = router(state.clone(), &config.allowed_origins)?;
+    let application = Arc::new(Application::from_config(&config)?);
+    let app = application.router()?;
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
+    application.start().await?;
+    let state = application.state();
     emit(
         mindos_node::core::events::Level::Info,
         "server.ready",
         json!({"address": listener.local_addr()?.to_string(), "serverId": state.auth.server_id(),
         "version": env!("CARGO_PKG_VERSION"), "logFile": log_file,
         "principals":state.auth.clients().iter().map(|c| c.authorization()).collect::<Vec<_>>(),
-        "execution": config.execution, "exportCount": config.exports.len(), "exports": startup::export_access(&state)}),
+        "execution": state.plugins.enabled("process"), "plugins":state.plugins.statuses(), "exportCount": config.exports.len(), "exports": startup::export_access(state)}),
     );
     if mindos_node::core::events::enabled(mindos_node::core::events::Level::Info) {
         eprintln!(
@@ -116,41 +102,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             listener.local_addr()?,
             path.display()
         );
-        startup::print(&config, listener.local_addr()?, &state);
+        startup::print(&config, listener.local_addr()?, state);
         if config.principals.is_empty() && state.auth.client(0).username().is_none() {
             eprintln!("  API Key: {}", state.auth.client(0).secret());
         }
     }
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown(state))
-        .await?;
+    let result = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown(application.clone()))
+        .await;
+    application.shutdown().await?;
+    result?;
     Ok(())
 }
 
-/// Stop admission, drain file work, then arm a hard exit deadline.
-async fn shutdown(state: Arc<State>) {
+/// Close plugin admission and drain resources before the connection grace deadline.
+async fn shutdown(application: Arc<Application>) {
     let signal = shutdown_signal().await.unwrap_or("signal-error");
     emit(
         mindos_node::core::events::Level::Info,
         "server.stopping",
         json!({"signal":signal}),
     );
-    if let Some(sync) = &state.sync {
-        sync.stop();
-    }
-    state.execution.stop_accepting();
-    state.harness.close().await;
-    state.operations.cancel_all();
-    state.execution.cancel_all();
-    drain_sync(&state).await;
-    if tokio::time::timeout(DRAIN_TIMEOUT, state.files.drain())
-        .await
-        .is_err()
-    {
+    if application.shutdown().await.is_err() {
         emit(
-            mindos_node::core::events::Level::Warn,
-            "server.drain_timeout",
-            json!({"timeoutMs": DRAIN_TIMEOUT.as_millis()}),
+            mindos_node::core::events::Level::Error,
+            "server.plugin_shutdown_failed",
+            json!({"code":"PLUGIN_SHUTDOWN_FAILED"}),
         );
     }
     // Nothing left to protect; do not wait forever for a stalled client.
@@ -170,20 +147,5 @@ async fn shutdown_signal() -> std::io::Result<&'static str> {
     tokio::select! {
         result=tokio::signal::ctrl_c()=>{result?;Ok("SIGINT")},
         _=terminate.recv()=>Ok("SIGTERM"),
-    }
-}
-
-async fn drain_sync(state: &State) {
-    let Some(storage) = state.sync.clone() else {
-        return;
-    };
-    let work = tokio::task::spawn_blocking(move || storage.drain_timeout(DRAIN_TIMEOUT));
-    match tokio::time::timeout(DRAIN_TIMEOUT, work).await {
-        Ok(Ok(Ok(()))) => {}
-        result => emit(
-            mindos_node::core::events::Level::Warn,
-            "sync.drain_failed",
-            json!({"result":format!("{result:?}"),"recoveryRequired":true}),
-        ),
     }
 }

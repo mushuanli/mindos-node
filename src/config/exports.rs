@@ -12,7 +12,8 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 pub(crate) fn validate_presence(config: &Config) -> Result<(), String> {
     let optional = (config.sync.as_ref().is_some_and(|s| s.enabled)
-        || !config.harnesses.is_empty())
+        || !config.harnesses.is_empty()
+        || config.plugins.get("files") == Some(&false))
         && !config.execution;
     if config.exports.is_empty() && !optional {
         return Err("no exports configured: add at least one [[exports]] section".into());

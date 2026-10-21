@@ -22,3 +22,5 @@ pub(crate) mod exports;
 pub use model::{Access, Config, ExportConfig};
 
 pub(crate) use exports::open_all as open_exports;
+
+pub(crate) mod plugin_adapter;

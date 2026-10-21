@@ -3,6 +3,8 @@ use super::{authorization, exports, identity, Config};
 use crate::auth::Auth;
 
 pub(crate) fn policy(config: &Config) -> Result<Auth, String> {
+    let (effective, _) = crate::plugin::common::PluginRegistry::builtins().resolve(config)?;
+    let config = super::plugin_adapter::deployment(effective.as_ref())?;
     identity::validate_identity(config)?;
     exports::validate_presence(config)?;
     crate::harness::config::validate(config)?;

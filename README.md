@@ -6,6 +6,8 @@ mindos-node 将设备上的文件、项目和执行环境接入 MindOS，统一�
 
 服务端目前支持 Linux（需要 `openat2`）；Web、Tauri 和 Node CLI 使用同一 HTTP 协议。服务启动时验证目录句柄能力，不支持时拒绝启动。
 
+节点功能已接入统一插件框架，可通过 `[plugins]` 分别开关文件接口、命令执行、同步、项目、Harness 和 MCP。未配置新开关时沿用原有行为。接口、装配顺序和独立验证见 [节点插件](doc/plugins.md)，配置见 [插件示例](config.plugins.example.toml)；可执行 `mindos-node plugins check CONFIG [PLUGIN]` 校验全部或单个插件而不启动服务。
+
 ```bash
 # 在本项目根目录执行（itookit monorepo 内即 tools/mindos-node，作为 submodule）
 cargo build --release
@@ -109,24 +111,24 @@ MindOS 项目右键菜单选择“启用远程命令”后，File Tools 和 Bash
 
 | 目录 | 职责 |
 | --- | --- |
-| `core/` | 与传输无关的基础件：错误词表与 errno 映射、标识符校验、文件/进程互斥门、阻塞工作池、分页游标 |
-| `cli/` | 本地管理参数解析、帮助与 JSON 输出，不复制授权规则 |
-| `admin/` | 目录授权配置用例、owner 迁移、私有备份与原子配置事务 |
-| `config/` | 配置模型、凭据策略、导出策略、配置文件查找与只读授权检查（不持有运行时状态） |
-| `app/` | 组合根：把配置装配成运行时状态（认证、导出、门、工作池、操作账本、执行准入） |
-| `auth.rs` | 身份解析与别名读写授权 |
-| `fs/` | 路径策略、目录能力（openat2）、revision、结构化修改、原子上传、启动恢复 |
-| `operations/` | 幂等写入收据：ID 复用、保留期与容量、取消语义、等待与超时 |
-| `sync/` | SQLite 持久元数据、不可变对象、条件发布、历史恢复、读取保护、GC 与停机灾备 |
-| `process/` | 准入 `execution`、请求策略 `policy`、bubblewrap 机制 `sandbox`、监管 `runner`、API `service` |
-| `workspace/` | 工作区租约：策略 `lease` 与原子日志机制 `journal`（独立可选，未接入路由） |
-| `http/` | 路由与 CORS、请求边界策略 `access`、`range` 解析、各端点 handler |
+| `core/` | 认证、日志、错误、标识符、文件门闩、线程预算与分页机制 |
+| `cli/`、`admin/`、`config/` | 部署配置、本地管理及旧格式适配 |
+| `app/` | 共享宿主 State 与通用插件生命周期；业务状态通过 Services 注册 |
+| `plugin/common/` | 插件与配置接口、依赖图、服务容器、协议聚合、租约机制及共享测试 |
+| `plugin/catalog.rs` | 产品默认插件目录与兼容装配 |
+| `plugin/files/` | 目录能力、文件操作账本、HTTP 文件接口和配置 |
+| `plugin/process/` | 命令准入、沙箱、进程监管和 HTTP |
+| `plugin/sync/` | 同步存储、维护、传输和同步工具契约 |
+| `plugin/projects/` | 项目目录、授权、目录同步集成和项目工具 |
+| `plugin/harness/` | 会话状态与工具；drivers/ 包含 Codex、Claude、DSH |
+| `plugin/mcp/` | 通用 MCP 传输、发现与资源适配，功能由插件贡献 |
+| `http/` | 共享认证、CORS、缓存策略、范围读取与宿主能力发现 |
 
 策略与机制的分界举例：`fs::path` 决定「什么路径合法」，`fs::export` 决定「如何用 `openat2` 打开」；`process::policy` 决定「哪些挂载被授权」，`process::sandbox` 决定「如何拼装 bwrap 参数」；`workspace::lease` 管租约状态机，`workspace::journal` 管 `write → fsync → rename → fsync` 的持久化与故障分级；`operations` 管收据语义，handler 只负责解析与转发。
 
 进程退出分两级：先停止接收命令、请在工作中的操作停止并等待文件门排空（5 秒），再给已打开的连接 5 秒自行结束，避免慢速下载无限拖住 Ctrl-C。
 
-测试与模块对应：`tests/config.rs`、`tests/fs.rs`、`tests/http/`（按端点分组）、`tests/process.rs`、`tests/workspace.rs`、`tests/sync/`，共享脚手架在 `tests/common/`。
+测试按功能放在 `src/plugin/<id>/tests/`，通用框架和共享脚手架位于 `src/plugin/common/tests/`。Cargo test target 名称保留，支持 `cargo test --test contributions`、`cargo test --test sync` 等独立验证。
 
 ## 日志
 
@@ -210,7 +212,28 @@ retained_files = 5
 
 Web/Tauri 在工具箱 MCP 配置并测试连接后，在支持 harness 的 mindos-node 配置中点击“控制中心”。支持 profile/workspace、新建、分页/归档列表、历史、继续、发送、增量输出、命令/文件审批、用户问题、显式中断和未知请求收据确认。历史浏览不会接管会话；继续仅允许授权 cwd、拒绝接管其他宿主的活跃线程。关闭面板只释放客户端连接，服务端 turn 继续运行。CLI 宿主已统一 adapter 接入，独立 harness 命令行界面尚未提供。
 
-服务提供认证后的 `POST /mcp`：MCP SDK 2.0.0 / 协议 2026-07-28，支持 server/discover、tools/list/call、ping；不宣告 Tasks 扩展。工具为 mindos_node_capabilities（兼容 piagent_capabilities / fsagent_capabilities）、harness_profiles、harness_sessions、harness_session_read、harness_events、harness_operation、harness_create、harness_resume、harness_turn、harness_interrupt、harness_respond。请求验证 protocol/version、method/name 和客户端 metadata，带 Origin 的请求还验证允许列表。Codex 控制采用官方 app-server stdio JSON-RPC，命令和目录只来自服务端配置。
+服务提供认证后的 `POST /mcp`：实现 MCP 协议 2026-07-28，与 MCP 客户端 SDK 2.0.0 对接，支持 server/discover、tools/list/call、resources/list/read、resources/templates/list、ping；不宣告 Tasks 扩展。发现工具为 mindos_node_capabilities（兼容 piagent_capabilities / fsagent_capabilities），其余工具按项目、目录同步和 harness 分组。请求验证 protocol/version、method/name 和客户端 metadata；clientInfo 可省略，携带时验证 name/version。带 Origin 的请求还验证允许列表。Codex 控制采用官方 app-server stdio JSON-RPC，命令和目录只来自服务端配置。
+
+`tools/list` 根据部署配置与当前身份返回可用工具：项目服务未配置时不列出项目工具，目录同步只对所属身份开放，harness 只对有 profile 授权的身份开放；project_exec/project_search 还检查执行服务与搜索程序是否可用。相同工具的参数契约固定，不因连接、会话或调用顺序变化。每个工具仅声明实际支持的必需/可选字段；project_search 的 mode 为 name/path/content，harness_session_search 为 title/content/prompt。项目范围的 harness 参数用 dependentRequired 声明 projectId/revision 的关联，具体 profile 的原生能力继续由 harness_profiles 返回。未知工具和畸形 tools/call 使用 JSON-RPC 错误；业务输入与执行失败仍返回 isError。
+
+### MCP 目录资源
+
+`server/discover` 声明 `resources: {}`，不声明订阅或列表变化通知。`resources/list` 返回一个 `application/json` 资源 `mindos-node://<serverId>/directories`，名称为 accessible_directories；通过 `resources/read` 按需读取，不会自动扫描或附带文件内容。未显式配置 server_id 时沿用认证层生成的安装身份。首版没有参数化资源，resources/templates/list 返回空数组。列表和读取结果均为 ttlMs=0、cacheScope=private；HTTP 响应继续使用 Cache-Control: no-store。
+
+读取结果为 version=1 的 JSON 文本，包含 serverId、authorization（principalId/revision）和以下集合：
+
+| 字段 | 内容与路径语义 |
+| --- | --- |
+| exports[] | 当前身份可读的 alias、path=""、逻辑 virtualPath（例如 /docs）、有效 access、nameSemantics、strongRevision、authorization 与 capabilities.fileRead/fileWrite/run |
+| projects[] | 当前身份拥有且通过现时授权/目录身份校验的 id、name、revision、root、mounts[] 和项目 capabilities |
+| root / mounts[] | 来源 alias、export 相对 path、逻辑 virtualPath、执行空间位置 at（根为 /workspace）、有效 access 与文件/执行 capabilities；附加挂载保留各自权限 |
+| workspaces[] | 当前身份获授权的旧版 harness profileId、workspaceId 和 capabilities.sessionCreate；workspace 标识本身不授予 HTTP 文件访问权限 |
+
+例如项目 root 可以是 `{ "alias": "docs", "path": "notes", "virtualPath": "/docs/notes", "at": "/workspace", "access": "ro", "capabilities": { "fileRead": true, "fileWrite": false, "run": false } }`。逻辑 virtualPath 不是宿主绝对路径，at 只用于执行空间；run 同时检查服务就绪与身份执行授权，项目还要求所有挂载均获执行授权。权限描述仅用于发现，后续文件、项目与 harness 操作仍逐请求鉴权并校验自己的修订号。
+
+资源读取复用文件 worker 的并发预算、超时和共享 gate，按本次请求的身份重新投影目录；授权已撤销、符号链接或物理身份已替换的项目不进入清单。不返回宿主物理路径、harness home、内部目录身份、数据库目录、凭据或文件内容。未知资源 URI 返回 -32602；读取的 Mcp-Name 必须与 params.uri 一致，支持标准 Base64 header 编码。跨身份读取同一个 URI 会得到各自的授权清单。
+
+MCP 代码分为 [传输入口](src/plugin/mcp/mod.rs)、[协议校验](src/plugin/mcp/protocol.rs)、[方法路由](src/plugin/mcp/requests.rs)、[通用工具分派](src/plugin/mcp/tools/mod.rs) 和 [资源适配](src/plugin/mcp/resources.rs)。工具 Schema 归各插件的 tools.json，调用、权限、能力和错误语义由各自 contribution.rs 提供；目录投影同样按插件聚合。相关协议和权限回归见 [MCP 测试](src/plugin/mcp/tests/mcp.rs)，独立插件扩展见 [contributions 测试](src/plugin/common/tests/contributions.rs)。
 
 已验证 Codex CLI 0.159.2。项目沙箱在配置的真实绝对路径挂载 harness home，并保留 `/harness` 兼容入口，避免原生 SQLite 索引中的绝对日志路径失效。`harness_session_info` 只读取元信息；普通会话历史优先原生 API，paginated 会话及 `toolDetail: "summary"` 请求读取 home 下 sessions/archived_sessions JSONL。历史使用 8 MiB 的日志窗口，必要时通过有界缓冲向前查找真实 turn_context/task_started，返回最多 100 项/2 MiB，通过 `nextCursor` 加载更早内容。保留真实 turnId、时间和消息内容数组，兼容 custom_tool_call；摘要模式在分页预算前去除工具参数和输出，只返回工具名称、操作、首个非空命令行（最多 240 个字符）和目标文件。事件也支持摘要模式并保留原始游标及审批请求。原生 createdAt/updatedAt 分别统一转换为毫秒，缺失时间返回 null；空名称回退原生请求预览，branchName 独立返回；session.native 不重复附带整份 turns。路径禁止符号链接，未完成尾行等待刷新；不修改原生索引或日志。继续会话使用 `thread/resume` 的 `excludeTurns`，由原生 CLI 确认可用性。
 
@@ -305,7 +328,7 @@ projects = true
 ```bash
 cargo test --test claude --test project_watch
 cargo build
-python3 tests/real_claude.py
+python3 src/plugin/harness/tests/real_claude.py
 ```
 
 最后一项为安装真实 CLI 后可选的验收：使用临时 home/项目、本地 Anthropic 协议 peer，验证原生审批写文件、图片、独立 CLI 发现及恢复；不访问个人数据或云模型，不代替桌面视觉验收。

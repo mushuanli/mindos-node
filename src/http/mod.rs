@@ -13,31 +13,18 @@ pub mod range;
 
 use crate::app::State;
 use axum::{
-    extract::DefaultBodyLimit,
     http::{HeaderName, HeaderValue, Method},
     middleware,
-    routing::{get, post},
+    routing::get,
     Router,
 };
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-/// Largest JSON body the extractors accept.
-///
-/// The client budgets 64 KiB of raw paths per batch; JSON escaping can inflate
-/// that, so the limit leaves headroom instead of rejecting a legal batch.
-const MAX_JSON_BODY: usize = 512 * 1024;
-
 /// Headers a browser client may send; anything else fails the CORS preflight.
-const ALLOWED_HEADERS: [&str; 17] = [
+const ALLOWED_HEADERS: [&str; 10] = [
     "x-pi-agent-principal",
     "x-pi-agent-grant-revision",
-    "x-fsagent-project",
-    "x-fsagent-project-revision",
-    "x-fsagent-project-readonly",
-    "mcp-protocol-version",
-    "mcp-method",
-    "mcp-name",
     "authorization",
     "content-type",
     "range",
@@ -46,64 +33,35 @@ const ALLOWED_HEADERS: [&str; 17] = [
     "if-none-match",
     "x-timeout-ms",
     "x-operation-id",
-    "x-sync-history-epoch",
 ];
 
 pub fn router(state: Arc<State>, origins: &[String]) -> Result<Router, String> {
+    let allowed = ALLOWED_HEADERS
+        .into_iter()
+        .chain(state.plugins.request_headers())
+        .map(|name| {
+            name.parse::<HeaderName>()
+                .map_err(|_| "Invalid plugin request header".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let cors = CorsLayer::new()
         .allow_origin(allow_origin(origins)?)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
-        .allow_headers(ALLOWED_HEADERS.map(HeaderName::from_static))
+        .allow_headers(allowed)
         .expose_headers([
             HeaderName::from_static("content-range"),
             HeaderName::from_static("etag"),
         ]);
-    let sync = Router::new()
-        .route(
-            "/v1/sync/*path",
-            get(crate::sync::transport::get)
-                .post(crate::sync::transport::post)
-                .put(crate::sync::transport::put),
-        )
-        .layer(DefaultBodyLimit::disable());
     Ok(Router::new()
-        .route(
-            "/mcp",
-            post(handlers::harness::mcp).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
-        )
         .route(
             "/v1/capabilities",
             get(handlers::capabilities::capabilities),
         )
-        .route("/v1/exports", get(handlers::exports::exports))
-        .route("/v1/fs/:alias/stat", post(handlers::stat::stat))
-        .route("/v1/fs/:alias/entries", get(handlers::entries::entries))
-        .route(
-            "/v1/fs/:alias/content",
-            get(handlers::content::content).put(handlers::mutations::replace),
-        )
-        .route("/v1/fs/:alias/mutate", post(handlers::mutations::mutate))
-        .route("/v1/fs/:alias/seq/snapshot", post(handlers::seq::snapshot))
-        .route(
-            "/v1/fs/:alias/seq/transaction",
-            post(handlers::seq::transaction),
-        )
-        .route(
-            "/v1/fs/:alias/operations/:id",
-            get(handlers::operations::status),
-        )
-        .route(
-            "/v1/fs/:alias/operations/:id/cancel",
-            post(handlers::operations::cancel),
-        )
-        .route("/v1/processes", post(handlers::processes::start))
-        .route("/v1/processes/:epoch/:id", get(handlers::processes::status))
-        .route(
-            "/v1/processes/:epoch/:id/cancel",
-            post(handlers::processes::cancel),
-        )
-        .layer(DefaultBodyLimit::max(MAX_JSON_BODY))
-        .merge(sync)
+        .merge(state.plugins.routes())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            access::authenticate,
+        ))
         .layer(cors)
         // File content and metadata must never be cached by an intermediary.
         .layer(middleware::map_response(

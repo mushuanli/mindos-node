@@ -1,7 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
-const fixtures = JSON.parse(readFileSync(new URL('../tests/sync/fixtures/manifests.json', import.meta.url)));
+const fixtures = JSON.parse(readFileSync(new URL('../src/plugin/sync/tests/integration/fixtures/manifests.json', import.meta.url)));
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));

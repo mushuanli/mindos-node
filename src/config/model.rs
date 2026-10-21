@@ -6,9 +6,13 @@
 
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub plugin_options: std::collections::BTreeMap<String, toml::Value>,
+    #[serde(default)]
+    pub plugins: std::collections::BTreeMap<String, bool>,
     #[serde(default)]
     pub log_level: crate::core::events::Level,
     #[serde(default)]
@@ -42,21 +46,7 @@ fn execution_enabled() -> bool {
     true
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExportConfig {
-    pub path: String,
-    /// Client-visible prefix; defaults to the final path component.
-    pub alias: Option<String>,
-    #[serde(default)]
-    pub access: Access,
-    #[serde(default)]
-    pub public: bool,
-    #[serde(default)]
-    pub grants: Vec<DirectoryGrant>,
-}
-
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrincipalConfig {
     pub id: String,
@@ -67,22 +57,4 @@ pub struct PrincipalConfig {
     pub password_env: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DirectoryGrant {
-    pub principal: String,
-    #[serde(default)]
-    pub access: Access,
-    #[serde(default)]
-    pub execute: bool,
-}
-
-#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Access {
-    /// Serve reads only; no lock, no revisions.
-    #[default]
-    Ro,
-    /// Serve reads and conditional writes behind an exclusive advisory lock.
-    Rw,
-}
+pub use crate::plugin::files::config::{Access, DirectoryGrant, ExportConfig};

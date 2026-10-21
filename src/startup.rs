@@ -4,10 +4,23 @@ use serde::Serialize;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 
 pub fn print(config: &Config, bound: SocketAddr, state: &State) {
+    let mut effective = config.clone();
+    effective.plugins = state.plugins.statuses().clone();
+    effective.execution = state.plugins.enabled("process");
+    if !state.plugins.enabled("projects") {
+        effective.projects = None;
+    }
+    if !state.plugins.enabled("sync") {
+        effective.sync = None;
+    }
+    if !state.plugins.enabled("harness") {
+        effective.harnesses.clear();
+    }
     eprintln!(
         "{}",
-        summary(config, bound, state.auth.server_id(), route_ip(bound))
+        summary(&effective, bound, state.auth.server_id(), route_ip(bound))
     );
+    eprintln!("  Plugins: {}", serde_json::json!(state.plugins.statuses()));
     for export in export_access(state) {
         eprintln!(
             "  Export /{}: {} (read={}, write={})",
@@ -64,7 +77,11 @@ fn summary(
         format!("  Server ID: {}", server_id.unwrap_or("not configured")),
         format!(
             "  MCP endpoint: {}",
-            endpoint(SocketAddr::new(local, bound.port()))
+            if config.plugins.get("mcp") == Some(&false) {
+                "disabled".into()
+            } else {
+                endpoint(SocketAddr::new(local, bound.port()))
+            }
         ),
         format!("  Authentication: {}", authentication(config)),
         format!(
@@ -74,7 +91,7 @@ fn summary(
             config.sync.as_ref().is_some_and(|s| s.enabled)
         ),
     ];
-    if bound.ip().is_unspecified() {
+    if bound.ip().is_unspecified() && config.plugins.get("mcp") != Some(&false) {
         lines.push(
             match route.filter(|ip| !ip.is_loopback() && !ip.is_unspecified()) {
                 Some(ip) => format!(

@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub directory: Option<PathBuf>,

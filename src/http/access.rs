@@ -8,6 +8,16 @@ use crate::{app::State, core::error::Error, fs::Export};
 use axum::http::HeaderMap;
 use std::{sync::Arc, time::Duration};
 
+/// Plugin routes share authentication; each handler still enforces its resource grants.
+pub(crate) async fn authenticate(
+    axum::extract::State(state): axum::extract::State<Arc<State>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, Error> {
+    identity(&state, request.headers())?;
+    Ok(next.run(request).await)
+}
+
 /// Budget used when the caller does not ask for one.
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// Hard ceiling on a caller-supplied budget.
@@ -96,87 +106,24 @@ pub fn deadline(headers: &HeaderMap) -> Result<tokio::time::Instant, Error> {
     Ok(tokio::time::Instant::now() + Duration::from_millis(budget.min(MAX_TIMEOUT_MS)))
 }
 
-/// Project-aware clients keep the original file protocol but carry a directory fence.
-pub fn project_path(
+/// Apply enabled feature policies; a claim owned by a disabled plugin fails closed.
+pub fn authorize_path(
     state: &State,
     headers: &HeaderMap,
     alias: &str,
     path: &str,
     write: bool,
     metadata: bool,
-) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, Error> {
-    let Some(id) = headers.get("x-fsagent-project") else {
-        return Ok(None);
-    };
-    let guard = state.files.shared()?;
-    let id = id.to_str().map_err(|_| Error::invalid())?;
-    let identity = identity(state, headers)?;
-    let project = state
-        .projects
-        .as_ref()
-        .ok_or_else(Error::unsupported)?
-        .get(identity, id)?;
-    crate::projects::service::authorize(state, identity, &project)?;
-    if headers
-        .get("x-fsagent-project-revision")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.parse().ok())
-        != Some(project.revision)
-    {
-        return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
-    }
-    if write
-        && headers
-            .get("x-fsagent-project-readonly")
-            .is_some_and(|h| h == "true")
-    {
-        return Err(Error::forbidden("EROFS"));
-    }
-    crate::fs::path::validate(path)?;
-    if project_allows(&project, alias, path, write, metadata) {
-        Ok(Some(guard))
-    } else {
-        Err(Error::forbidden(if write { "EROFS" } else { "EACCES" }))
-    }
+) -> Result<Vec<tokio::sync::OwnedRwLockReadGuard<()>>, Error> {
+    state.plugins.authorize_path(
+        state,
+        &crate::plugin::common::PathAccess {
+            headers,
+            alias,
+            path,
+            write,
+            metadata,
+        },
+    )
 }
-fn beneath(path: &str, root: &str) -> bool {
-    root.is_empty() || path == root || path.starts_with(&(root.to_owned() + "/"))
-}
-fn project_allows(
-    project: &crate::projects::model::Project,
-    alias: &str,
-    path: &str,
-    write: bool,
-    metadata: bool,
-) -> bool {
-    let mounts = crate::projects::service::mounts(project);
-    mounts.iter().filter(|m| m.alias == alias).any(|mount| {
-        if metadata && !write && beneath(&mount.path, path) {
-            return true;
-        }
-        if !beneath(path, &mount.path) || write && mount.access != "rw" {
-            return false;
-        }
-        let relative = path
-            .strip_prefix(&mount.path)
-            .unwrap_or(path)
-            .trim_start_matches('/');
-        let virtual_path = if relative.is_empty() {
-            mount.at.clone()
-        } else {
-            format!("{}/{}", mount.at, relative)
-        };
-        let shadow = mounts
-            .iter()
-            .filter(|m| beneath(&virtual_path, &m.at))
-            .max_by_key(|m| m.at.len())
-            .unwrap();
-        let suffix = virtual_path[shadow.at.len()..].trim_start_matches('/');
-        let source = [shadow.path.as_str(), suffix]
-            .into_iter()
-            .filter(|p| !p.is_empty())
-            .collect::<Vec<_>>()
-            .join("/");
-        shadow.alias == alias && source == path && (!write || shadow.access == "rw")
-    })
-}
+pub use authorize_path as project_path;

@@ -1,38 +1,17 @@
-//! `GET /v1/capabilities` — what this node can actually do.
-//!
-//! Support discovery is authenticated and never substitutes for the
-//! per-directory authorization checks each data endpoint performs.
-
-use crate::{app::State, core::error::Error, http::access};
+use crate::{app::State, core::error::Error, http::access, plugin::common::object};
 use axum::{extract::State as AxumState, http::HeaderMap, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
-
 pub async fn capabilities(
     AxumState(state): AxumState<Arc<State>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, Error> {
-    let client = state.auth.client(access::identity(&state, &headers)?);
-    let execution = state.execution.ready() && client.has_execution();
-    Ok(Json(json!({
-        "processEpoch": state.execution.epoch(),
-        "version": 1,
-        "serverId": state.auth.server_id(),
-        "authorization": client.authorization(),
-        "files": {
-            "read": !client.exports().is_empty(),
-            "write": client.can_write(),
-            "seq": { "version": 1, "sqlite": true, "transactionScope": "file" },
-        },
-        "sync": { "push": state.sync.as_ref().is_some_and(|s|s.healthy() && (client.legacy() || s.principal_id() == client.id())),
-            "protocolVersion": if state.sync.is_some() {Some(1)} else {None},
-            "discovery": if state.sync.is_some() {Some("/v1/sync/capabilities")} else {None} },
-        "process": { "exec": execution },
-        "terminal": { "pty": false },
-        "harness": { "enabled": state.harness.enabled() && client.has_harness(), "protocolVersion": "2026-07-28", "endpoint": "/mcp" },
-        "executionModel": if execution { "sandbox" } else { "none" },
-        "workspaceConsistency": if execution { "isolated" } else { "none" },
-        "readOnlyEnforcement": if execution { "kernel-enforced" } else { "none" },
-        "pathModel": if execution { "virtual-root" } else { "none" },
-    })))
+    let identity = access::identity(&state, &headers)?;
+    let base = object(
+        json!({"processEpoch":state.epoch,"version":1,"serverId":state.auth.server_id(),
+        "authorization":state.auth.client(identity).authorization(),"plugins":state.plugins.statuses(),"terminal":{"pty":false}}),
+    );
+    Ok(Json(
+        state.plugins.capabilities(&state, identity, base, true)?,
+    ))
 }
