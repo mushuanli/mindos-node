@@ -9,7 +9,7 @@ pub async fn capabilities(
     let identity = access::identity(&state, &headers)?;
     let base = object(
         json!({"processEpoch":state.epoch,"version":1,"serverId":state.auth.server_id(),
-        "authorization":state.auth.client(identity).authorization(),"plugins":state.plugins.statuses(),"terminal":{"pty":false}}),
+        "authorization":state.auth.client(identity).authorization(),"plugins":state.plugins.statuses(),"terminal":{"pty":false},"events":crate::http::subscriptions::capability()}),
     );
     Ok(Json(
         state.plugins.capabilities(&state, identity, base, true)?,

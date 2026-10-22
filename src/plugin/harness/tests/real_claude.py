@@ -48,6 +48,46 @@ class Model(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
 
 
+
+class EventObserver:
+    def __init__(self, port, scope):
+        self.condition = threading.Condition()
+        self.pages = {}
+        self.failure = None
+        subscriptions = [{'id': 'harness', 'plugin': 'harness', 'args': scope}, {'id': 'files', 'plugin': 'projects', 'args': scope}]
+        request = urllib.request.Request(f'http://127.0.0.1:{port}/v1/events', data=json.dumps({'version': 1, 'subscriptions': subscriptions}).encode(), headers={'Authorization': 'Bearer fixture-token-0123456789abcdef', 'Content-Type': 'application/json'})
+        self.response = urllib.request.urlopen(request, timeout=30)
+        threading.Thread(target=self.read, daemon=True).start()
+
+    def read(self):
+        try:
+            for line in self.response:
+                if not line.startswith(b'data: '):
+                    continue
+                frame = json.loads(line[6:])
+                with self.condition:
+                    if 'error' in frame:
+                        raise RuntimeError(frame['error']['code'])
+                    prior = self.pages.get(frame['id'], {})
+                    page = frame['data']
+                    if frame['id'] == 'harness':
+                        page['events'] = (prior.get('events', []) + page['events'])[-1024:]
+                    self.pages[frame['id']] = page
+                    self.condition.notify_all()
+        except Exception as error:
+            with self.condition:
+                self.failure = error
+                self.condition.notify_all()
+
+    def wait(self, channel, predicate=lambda page: True, timeout=30):
+        with self.condition:
+            ready = self.condition.wait_for(lambda: self.failure or channel in self.pages and predicate(self.pages[channel]), timeout)
+            if self.failure:
+                raise self.failure
+            assert ready, f'No matching {channel} event received'
+            return self.pages[channel]
+
+
 def main():
     command = os.environ.get('MINDOS_NODE_CLAUDE_COMMAND') or shutil.which('claude')
     assert command, 'Install Claude Code or set MINDOS_NODE_CLAUDE_COMMAND'
@@ -96,15 +136,11 @@ def main():
 
             created = mutate('harness_create', {'workspaceId': project['id']})['session']
             session_id = created['id']
-            watcher = call('project_watch', scope)
+            observer = EventObserver(port, scope)
+            watcher = observer.wait('files')
             turn = mutate('harness_turn', {'sessionId': session_id, 'prompt': 'write watcher fixture'})
-            approval = None
-            for _ in range(200):
-                events = call('harness_events', scope)
-                approval = next((request for request in events['requests'] if request['params']['threadId'] == session_id), None)
-                if approval:
-                    break
-                time.sleep(.1)
+            events = observer.wait('harness', lambda page: any(request['params']['threadId'] == session_id for request in page['requests']))
+            approval = next(request for request in events['requests'] if request['params']['threadId'] == session_id)
             assert approval, 'Native Write approval was not received'
             mutate('harness_respond', {'nativeRequestId': approval['id'], 'response': {'decision': 'accept'}})
             for _ in range(200):
@@ -114,7 +150,7 @@ def main():
                 time.sleep(.1)
             assert ended['status'] == 'idle' and ended['owned'] is True
             assert (root / 'export/project/fixture.md').read_text() == 'Claude watcher fixture\n'
-            assert call('project_watch', {**scope, 'watchId': watcher['watchId']})['version'] != watcher['version']
+            observer.wait('files', lambda page: page['version'] != watcher['version'])
             for _ in range(100):
                 history = call('harness_session_read', {**scope, 'sessionId': session_id, 'toolDetail': 'summary'})
                 if 'Claude harness fixture reply' in json.dumps(history):
@@ -142,9 +178,9 @@ def main():
                     break
                 time.sleep(.1)
             assert resumed_end['status'] == 'idle'
-            version = call('project_watch', {**scope, 'watchId': watcher['watchId']})['version']
+            version = observer.wait('files')['version']
             (root/'export/project/external.md').write_text('Independent directory write')
-            assert call('project_watch', {**scope, 'watchId': watcher['watchId']})['version'] != version
+            observer.wait('files', lambda page: page['version'] != version)
             print(json.dumps({'native_create': True, 'approval_roundtrip': True, 'native_write': True, 'controlled_idle_owned': True, 'native_history': True, 'external_cli_owned': independent['owned'], 'external_cli_status': independent['status'], 'directory_watch': True, 'external_resume': True, 'native_image': True}))
         finally:
             if external and external.poll() is None:

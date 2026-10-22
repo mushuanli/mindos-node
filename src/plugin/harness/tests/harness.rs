@@ -1,3 +1,5 @@
+#[path = "support/events.rs"]
+mod event_support;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -41,6 +43,40 @@ fn service(root: &Path) -> Harnesses {
         "epoch".into(),
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn event_subscription_survives_idle_driver_replacement_without_pinning_the_process() {
+    use futures_util::StreamExt;
+    let root = tempfile::tempdir().unwrap();
+    let executable = root.path().join("codex-fixture.py");
+    std::fs::write(&executable, include_str!("fixtures/codex-app-server.py")).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let state = State::from_config(&config(root.path(), executable.to_str().unwrap())).unwrap();
+    let service = state.services.require::<Harnesses>().unwrap();
+    let mut source = service
+        .subscribe(&state, 0, json!({"profileId":"codex"}))
+        .await
+        .unwrap();
+    let first = source.next().await.unwrap().unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), source.next())
+            .await
+            .is_err()
+    );
+    service
+        .reap_idle(std::time::Instant::now() + std::time::Duration::from_secs(301))
+        .await;
+    let epoch = service.profiles()["epoch"].clone();
+    service.call("harness_create",json!({"profileId":"codex","epoch":epoch,"requestId":"after-reap","workspaceId":"project"})).await.unwrap();
+    let next = tokio::time::timeout(std::time::Duration::from_secs(2), source.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_ne!(first["epoch"], next["epoch"]);
+    drop(source);
+    service.close().await;
 }
 
 async fn mutate(service: &Harnesses, name: &str, id: &str, extra: Value) -> Value {
@@ -116,7 +152,7 @@ async fn active_summary_refresh_recovers_a_long_answer_not_yet_flushed_to_histor
     );
     assert_eq!(history["session"]["activeTurnId"], "turn-1");
     assert!(history["eventCursor"]["after"].as_u64().unwrap() > 1024);
-    let events = service.call("harness_events", json!({"profileId":"codex","after":history["eventCursor"]["after"],"eventEpoch":history["eventCursor"]["eventEpoch"]})).await.unwrap();
+    let events = event_support::snapshot(&service, json!({"profileId":"codex","after":history["eventCursor"]["after"],"eventEpoch":history["eventCursor"]["eventEpoch"]})).await.unwrap();
     assert_eq!(events["events"], json!([]));
     let reopened = service.call("harness_session_read", read).await.unwrap();
     assert_eq!(reopened["turns"], history["turns"]);
@@ -255,8 +291,7 @@ async fn creates_reads_resumes_streams_approves_and_interrupts_without_replay() 
     .await;
     assert_eq!(turn["result"]["turnId"], "turn-1");
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    let events = service
-        .call("harness_events", json!({"profileId":"codex"}))
+    let events = event_support::snapshot(&service, json!({"profileId":"codex"}))
         .await
         .unwrap();
     assert_eq!(events["requests"].as_array().unwrap().len(), 1);
@@ -556,8 +591,7 @@ async fn approvals_can_unblock_a_turn_before_its_start_reply() {
     });
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
-            let events = service
-                .call("harness_events", json!({"profileId":"codex"}))
+            let events = event_support::snapshot(&service, json!({"profileId":"codex"}))
                 .await
                 .unwrap();
             if !events["requests"].as_array().unwrap().is_empty() {

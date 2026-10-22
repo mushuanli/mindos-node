@@ -45,17 +45,9 @@ pub async fn call(
             if let Some(harness) = state.services.get::<crate::harness::Harnesses>() {
                 harness.close_project(id).await;
             }
-            service
-                .watches
-                .lock()
-                .map_err(|_| Error::internal())?
-                .remove_project(id);
             Ok(json!({"forgotten":id}))
         }
         "project_exec" => execute(state, identity, service, args),
-        "project_watch" | "project_unwatch" => {
-            super::watch::call(state, identity, name, args).await
-        }
         "project_search" => super::search::search(state, identity, args).await,
         _ => Err(Error::unsupported()),
     }
@@ -85,11 +77,6 @@ async fn remount(
     if let Some(harness) = state.services.get::<crate::harness::Harnesses>() {
         harness.close_project(id).await;
     }
-    service
-        .watches
-        .lock()
-        .map_err(|_| Error::internal())?
-        .remove_project(id);
     Ok(json!({"project":super::descriptor::project(state,identity,&project)?}))
 }
 
@@ -119,11 +106,6 @@ async fn configure(
         text(&args, "name")?.into(),
         mounts,
     )?;
-    service
-        .watches
-        .lock()
-        .map_err(|_| Error::internal())?
-        .remove_project(id);
     Ok(json!({"project":super::descriptor::project(state,identity,&project)?}))
 }
 

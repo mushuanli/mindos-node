@@ -12,6 +12,14 @@ use std::sync::Arc;
 
 pub struct Process;
 impl NodePlugin for Process {
+    fn subscribe<'a>(
+        &'a self,
+        state: &'a Arc<State>,
+        identity: usize,
+        args: serde_json::Value,
+    ) -> crate::plugins::EventFuture<'a> {
+        Box::pin(async move { super::subscription::subscribe(state, identity, args) })
+    }
     fn capabilities(
         &self,
         state: &State,

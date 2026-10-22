@@ -212,6 +212,17 @@ fn path_field(key: &str, child: &Value, paths: &mut BTreeSet<String>, depth: usi
     }
 }
 pub fn events(mut page: Value) -> Value {
+    for request in page["requests"].as_array_mut().into_iter().flatten() {
+        if matches!(
+            request["method"].as_str(),
+            Some("item/commandExecution/requestApproval" | "item/fileChange/requestApproval")
+        ) && request["params"]["availableDecisions"].is_null()
+            && request["params"]["decisions"].is_null()
+        {
+            request["params"]["decisions"] =
+                json!(["accept", "acceptForSession", "decline", "cancel"]);
+        }
+    }
     if let Some(events) = page["events"].as_array_mut() {
         events.retain_mut(|event| {
             let message = &mut event["message"];

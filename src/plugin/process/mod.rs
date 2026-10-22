@@ -19,6 +19,7 @@ pub mod policy;
 mod runner;
 pub mod sandbox;
 mod service;
+mod subscription;
 
 pub use execution::{enable, Execution};
 pub use model::{Mount, Process, Registry, Request, Status};

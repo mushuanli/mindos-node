@@ -368,10 +368,6 @@ impl Claude {
                 super::usage::attach(&mut session, self.usage(args).await);
                 Ok(json!({"session":session}))
             }
-            "harness_events" => Ok(self.events.lock().unwrap().page(
-                args["eventEpoch"].as_str(),
-                args["after"].as_u64().unwrap_or(0),
-            )),
             "harness_session_search" => self.search(args).await,
             _ => Err(Error::unsupported()),
         }
@@ -402,6 +398,12 @@ impl Claude {
     }
 }
 impl HarnessDriver for Claude {
+    fn subscribe(&self, args: Value) -> crate::plugins::EventFuture<'_> {
+        Box::pin(async move {
+            self.check_read()?;
+            Ok(crate::harness::events::stream(&self.events, args))
+        })
+    }
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":"claude","workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),"projectRuntime":self.config.projects,
         "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"searchPrompts":true,"searchKeywords":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})

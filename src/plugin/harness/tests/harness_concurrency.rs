@@ -1,3 +1,5 @@
+#[path = "support/events.rs"]
+mod event_support;
 use mindos_node::{app::State, config::Config, projects::call};
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
@@ -271,7 +273,17 @@ async fn another_session_starts_while_the_first_is_waiting_for_approval_before_i
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let events = invoke(&state, &base, "harness_events", "events", json!({})).await;
+            let events = event_support::scoped(
+                state
+                    .services
+                    .require::<mindos_node::harness::Harnesses>()
+                    .unwrap(),
+                &state,
+                0,
+                base.clone(),
+            )
+            .await
+            .unwrap();
             if events["requests"]
                 .as_array()
                 .unwrap()
@@ -380,7 +392,17 @@ async fn thirty_two_sessions_submit_while_another_waits_for_approval() {
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let page = invoke(&state, &base, "harness_events", "events", json!({})).await;
+            let page = event_support::scoped(
+                state
+                    .services
+                    .require::<mindos_node::harness::Harnesses>()
+                    .unwrap(),
+                &state,
+                0,
+                base.clone(),
+            )
+            .await
+            .unwrap();
             if !page["requests"].as_array().unwrap().is_empty() {
                 break;
             }

@@ -45,6 +45,14 @@ impl From<&str> for PluginFailure {
 /// Compiled-in features own settings, validation, service assembly, routes and cleanup.
 /// Hooks must release their own partial work when construction fails; stop must be idempotent.
 pub trait NodePlugin: Send + Sync {
+    fn subscribe<'a>(
+        &'a self,
+        _state: &'a Arc<State>,
+        _identity: usize,
+        _args: serde_json::Value,
+    ) -> EventFuture<'a> {
+        Box::pin(async { Err(crate::core::error::Error::unsupported()) })
+    }
     fn request_headers(&self) -> &'static [&'static str] {
         &[]
     }
@@ -111,6 +119,8 @@ pub trait NodePlugin: Send + Sync {
 
 mod services;
 pub use services::Services;
+mod events;
+pub use events::{EventFuture, EventStream};
 
 impl From<crate::core::error::Error> for PluginFailure {
     fn from(error: crate::core::error::Error) -> Self {

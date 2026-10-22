@@ -129,17 +129,6 @@ impl Dsh {
                 )
                 .await
             }
-            "harness_events" => {
-                let page = self.events.lock().unwrap().page(
-                    args["eventEpoch"].as_str(),
-                    args["after"].as_u64().unwrap_or(0),
-                );
-                Ok(if args["toolDetail"] == "summary" {
-                    super::super::presentation::events(page)
-                } else {
-                    page
-                })
-            }
             _ => Err(Error::unsupported()),
         }
     }

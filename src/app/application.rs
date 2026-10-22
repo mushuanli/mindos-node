@@ -54,6 +54,7 @@ impl Application {
         Ok(())
     }
     pub async fn shutdown(&self) -> Result<(), String> {
+        self.state.event_stop.cancel();
         self.state.plugins.stop_admission(&self.state);
         let stopped = self.runtime.stop(&self.state).await;
         let drained =

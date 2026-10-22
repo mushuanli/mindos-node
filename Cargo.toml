@@ -1,6 +1,6 @@
 [package]
 name = "mindos-node"
-version = "0.3.9"
+version = "0.4.0"
 edition = "2021"
 description = "MindOS personal intelligence node for controlled files, projects, sync and AI harness sessions"
 repository = "https://github.com/mushuanli/mindos-node"
@@ -149,6 +149,10 @@ path = "src/plugin/sync/tests/integration/main.rs"
 [[test]]
 name = "contributions"
 path = "src/plugin/common/tests/contributions.rs"
+
+[[test]]
+name = "events"
+path = "src/plugin/common/tests/events.rs"
 
 [[test]]
 name = "plugin_layout"

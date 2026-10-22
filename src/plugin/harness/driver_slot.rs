@@ -11,6 +11,7 @@ use std::{
 };
 
 pub(super) struct DriverSlot {
+    changed: tokio::sync::watch::Sender<u64>,
     current: Mutex<Option<Arc<dyn HarnessDriver>>>,
     touched: Mutex<Instant>,
     closed: AtomicBool,
@@ -65,6 +66,7 @@ mod tests {
         };
         let driver: Arc<dyn HarnessDriver> = create().unwrap().into();
         let slot = DriverSlot {
+            changed: tokio::sync::watch::channel(0).0,
             current: Mutex::new(Some(driver)),
             touched: Mutex::new(Instant::now()),
             closed: AtomicBool::new(false),
@@ -102,6 +104,7 @@ impl DriverSlot {
         let create = Box::new(move || plugins.create(config.clone(), runtime.clone()));
         let driver: Arc<dyn HarnessDriver> = create()?.into();
         Ok(Self {
+            changed: tokio::sync::watch::channel(0).0,
             descriptor: driver.descriptor(),
             current: Mutex::new(Some(driver)),
             touched: Mutex::new(Instant::now()),
@@ -112,6 +115,18 @@ impl DriverSlot {
     pub fn descriptor(&self) -> Value {
         self.descriptor.clone()
     }
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+    pub fn peek(&self) -> Option<Arc<dyn HarnessDriver>> {
+        if self.closed.load(Ordering::Acquire) {
+            return None;
+        }
+        self.current.lock().unwrap().clone()
+    }
+    pub fn closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
     pub fn get(&self) -> Result<Arc<dyn HarnessDriver>, Error> {
         let mut current = self.current.lock().unwrap();
         if self.closed.load(Ordering::Acquire) {
@@ -120,6 +135,7 @@ impl DriverSlot {
         *self.touched.lock().unwrap() = Instant::now();
         if current.is_none() {
             *current = Some((self.create)().map_err(|_| Error::unavailable())?.into());
+            self.changed.send_modify(|version| *version += 1);
         }
         Ok(current.as_ref().unwrap().clone())
     }
@@ -134,11 +150,13 @@ impl DriverSlot {
             return None;
         }
         let driver = current.take()?;
+        self.changed.send_modify(|version| *version += 1);
         driver.stop();
         Some(driver)
     }
     pub fn stop(&self) {
         self.closed.store(true, Ordering::Release);
+        self.changed.send_modify(|version| *version += 1);
         if let Some(driver) = self.current.lock().unwrap().as_ref() {
             driver.stop();
         }
@@ -152,6 +170,7 @@ impl DriverSlot {
     #[cfg(test)]
     pub fn testing(driver: Box<dyn HarnessDriver>) -> Self {
         Self {
+            changed: tokio::sync::watch::channel(0).0,
             descriptor: driver.descriptor(),
             current: Mutex::new(Some(driver.into())),
             touched: Mutex::new(Instant::now()),

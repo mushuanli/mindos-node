@@ -11,102 +11,18 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+mod subscription;
 mod tree;
+pub(super) use subscription::subscribe;
 
-pub struct Registry {
-    entries: BTreeMap<String, Watch>,
-}
 struct Watch {
-    owner: usize,
-    project: String,
-    revision: u64,
-    touched: Instant,
+    generation: u64,
     roots: Vec<tree::Root>,
     fd: OwnedFd,
     directories: BTreeMap<i32, tree::Directory>,
     version: u64,
     truncated: bool,
     needs_rescan: bool,
-}
-impl Registry {
-    pub fn new() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-        }
-    }
-    pub fn remove_project(&mut self, id: &str) {
-        self.entries.retain(|_, watch| watch.project != id);
-    }
-    fn prune(&mut self) {
-        self.entries
-            .retain(|_, watch| watch.touched.elapsed() < Duration::from_secs(60));
-    }
-}
-fn observe(state: &Arc<State>, owner: usize, name: &str, args: Value) -> Result<Value, Error> {
-    let project = authorized(state, owner, &args)?;
-    let registry = &state
-        .services
-        .get::<crate::projects::ProjectService>()
-        .ok_or_else(Error::unsupported)?
-        .watches;
-    let mut registry = registry.lock().map_err(|_| Error::internal())?;
-    registry.prune();
-    if name == "project_unwatch" {
-        return release(&mut registry, owner, &project, &args);
-    }
-    let requested = args["watchId"].as_str();
-    let token = match requested {
-        Some(id) if registry.entries.contains_key(id) => id.to_owned(),
-        _ => create(&mut registry, state, owner, &project)?,
-    };
-    snapshot(&mut registry, state, owner, &project, &token, requested)
-}
-
-fn snapshot(
-    registry: &mut Registry,
-    state: &State,
-    owner: usize,
-    project: &Project,
-    token: &str,
-    requested: Option<&str>,
-) -> Result<Value, Error> {
-    let watch = registry
-        .entries
-        .get_mut(token)
-        .ok_or_else(Error::internal)?;
-    if watch.owner != owner || watch.project != project.id || watch.revision != project.revision {
-        return Err(Error::forbidden("EACCES"));
-    }
-    if let Err(error) = tree::verify(state, project, &watch.roots) {
-        registry.entries.remove(token);
-        return Err(error);
-    }
-    let gap = requested.is_some_and(|id| id != token);
-    let overflow = poll(watch)?;
-    tree::verify(state, project, &watch.roots)?;
-    watch.touched = Instant::now();
-    Ok(
-        json!({"watchId":token,"version":format!("{token}:{}",watch.version),"gap":gap || overflow,"truncated":watch.truncated}),
-    )
-}
-pub async fn call(
-    state: &Arc<State>,
-    owner: usize,
-    name: &str,
-    args: Value,
-) -> Result<Value, Error> {
-    static WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-    let permit = WORK
-        .try_acquire()
-        .map_err(|_| Error::too_many("PROJECT_WATCH_BUSY"))?;
-    let state = state.clone();
-    let name = name.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        observe(&state, owner, &name, args)
-    })
-    .await
-    .map_err(|_| Error::internal())?
 }
 fn authorized(state: &State, owner: usize, args: &Value) -> Result<Project, Error> {
     let id = args["projectId"].as_str().ok_or_else(Error::invalid)?;
@@ -121,28 +37,16 @@ fn authorized(state: &State, owner: usize, args: &Value) -> Result<Project, Erro
     }
     Ok(project)
 }
-fn create(
-    registry: &mut Registry,
-    state: &State,
-    owner: usize,
-    project: &Project,
-) -> Result<String, Error> {
-    if registry.entries.len() >= 16 {
-        return Err(Error::too_many("PROJECT_WATCH_LIMIT"));
-    }
+fn create(state: &State, project: &Project) -> Result<(Watch, String), Error> {
     let roots = tree::roots(state, project)?;
     let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?;
     let (directories, truncated) = tree::scan(&fd, &roots)?;
     let mut random = [0u8; 16];
     getrandom::getrandom(&mut random).map_err(|_| Error::internal())?;
-    let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    registry.entries.insert(
-        token.clone(),
+    let token = random.iter().map(|b| format!("{b:02x}")).collect();
+    Ok((
         Watch {
-            owner,
-            project: project.id.clone(),
-            revision: project.revision,
-            touched: Instant::now(),
+            generation: 0,
             roots,
             fd,
             directories,
@@ -150,23 +54,8 @@ fn create(
             truncated,
             needs_rescan: false,
         },
-    );
-    Ok(token)
-}
-fn release(
-    registry: &mut Registry,
-    owner: usize,
-    project: &Project,
-    args: &Value,
-) -> Result<Value, Error> {
-    let token = args["watchId"].as_str().ok_or_else(Error::invalid)?;
-    if let Some(watch) = registry.entries.get(token) {
-        if watch.owner != owner || watch.project != project.id {
-            return Err(Error::forbidden("EACCES"));
-        }
-        registry.entries.remove(token);
-    }
-    Ok(json!({"released":true}))
+        token,
+    ))
 }
 fn poll(watch: &mut Watch) -> Result<bool, Error> {
     let (changed, rescan, overflow) = drain(watch)?;
@@ -212,6 +101,7 @@ fn rebuild(watch: &mut Watch) -> Result<(), Error> {
     let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?;
     let (directories, truncated) = tree::scan(&fd, &watch.roots)?;
     watch.fd = fd;
+    watch.generation += 1;
     watch.directories = directories;
     watch.truncated = truncated;
     watch.needs_rescan = false;

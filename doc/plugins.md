@@ -71,6 +71,16 @@ cargo test --locked --test node_plugins --test plugin_runtime
 
 ## 扩展与验收
 
+### 事件订阅设计（0.4）
+
+`POST /v1/events` 是唯一的节点事件传输入口，使用带认证 header 的 fetch SSE；请求包含版本与最多 32 个 `{id, plugin, args}` 订阅。一个应用运行时按节点与认证身份共享连接，多个项目/profile/进程复用。传输只负责限流、Origin、帧边界、心跳、取消和按订阅 ID 分发；插件通过 `NodePlugin::subscribe` 授权并提供流，不在公共层判断业务工具名。
+
+Harness 直接订阅已有有界事件缓冲，沿用 epoch/cursor/gap 与待答请求快照；满页立即追赶，断线从最后已消费游标恢复，缺口通过权威历史修复。订阅不持有原生 driver，空闲卸载后等待真正的调用重建 driver，不靠心跳启动进程。项目文件通过异步 inotify 就绪通知发送版本失效信号；进程通过状态变更通知发送终态，不以传输断开取消执行。文件正文、同步数据、命令、审批回复和收据继续走原有 HTTP/MCP 操作。
+
+文本事件可小批合并，审批与终态不丢弃。服务端不维护无界发送队列，客户端缓冲溢出明确断开并从游标恢复；慢消费者超出回放窗口时报告 gap。订阅建立和项目变更后都检查资源授权及 revision；错误帧只包含分类和状态，不包含参数、正文或凭据。连接与失败日志记录 operationId、阶段、订阅数量和耗时。
+
+服务端先完成实现与独立测试，再更新客户端接入。接入完成删除旧 `harness_events`、`project_watch`/`project_unwatch` 轮询工具和客户端轮询端口，不保留旧节点回退；部署必须配套升级节点和客户端。快照、回执、取消及用于恢复的进程状态读取保留。
+
 自有插件实现 NodePlugin，按需实现 McpContribution；在独立 PluginRegistry 中注册，再调用 Application::assemble(host, registry, configuration)。类型化状态通过 host.services.insert(Arc::new(OwnState)) 注册，处理器通过 require::<OwnState>() 取得；禁用或未注册时返回能力错误，容器拒绝重复类型，不隐式创建默认服务。
 
 完整扩展示例及验收见 [contributions.rs](../src/plugin/common/tests/contributions.rs)：只注册测试插件和 MCP，即能验证独立配置、状态、HTTP、工具、资源、能力与关闭行为，不初始化其他业务服务。运行 `cargo test --locked --test contributions`。各插件的自测与共享框架测试同时属于 `cargo test --locked`。

@@ -3,6 +3,14 @@ use std::sync::Arc;
 
 pub struct Projects;
 impl NodePlugin for Projects {
+    fn subscribe<'a>(
+        &'a self,
+        state: &'a Arc<State>,
+        identity: usize,
+        args: serde_json::Value,
+    ) -> crate::plugins::EventFuture<'a> {
+        Box::pin(async move { super::watch::subscribe(state.clone(), identity, args).await })
+    }
     fn path_headers(&self) -> &'static [&'static str] {
         &[
             "x-fsagent-project",

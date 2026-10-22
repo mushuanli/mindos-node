@@ -97,32 +97,6 @@ impl Codex {
                 super::usage::attach(&mut session, self.thread_usage(&thread).await);
                 Ok(json!({"session":session}))
             }
-            "harness_events" => {
-                let after = args["after"].as_u64().unwrap_or(0);
-                let mut page = bridge
-                    .events
-                    .lock()
-                    .unwrap()
-                    .page(args["eventEpoch"].as_str(), after);
-                for request in page["requests"].as_array_mut().into_iter().flatten() {
-                    if matches!(
-                        request["method"].as_str(),
-                        Some(
-                            "item/commandExecution/requestApproval"
-                                | "item/fileChange/requestApproval"
-                        )
-                    ) && request["params"]["availableDecisions"].is_null()
-                    {
-                        request["params"]["decisions"] =
-                            json!(["accept", "acceptForSession", "decline", "cancel"]);
-                    }
-                }
-                Ok(if args["toolDetail"] == "summary" {
-                    super::presentation::events(page)
-                } else {
-                    page
-                })
-            }
             _ => Err(Error::unsupported()),
         }
     }
@@ -559,6 +533,9 @@ fn validate_response(request: &Value, result: Value) -> Result<(), Error> {
 }
 
 impl HarnessDriver for Codex {
+    fn subscribe(&self, args: Value) -> crate::plugins::EventFuture<'_> {
+        Box::pin(async move { Ok(super::events::stream(&self.bridge().await?.events, args)) })
+    }
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":self.config.kind,
             "workspaces":self.config.workspaces.iter().map(|w| json!({"id":w.id})).collect::<Vec<_>>(),

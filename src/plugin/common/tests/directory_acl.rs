@@ -311,12 +311,7 @@ async fn harness_profiles_events_and_receipts_are_not_shared_with_directory_read
         if id != "anonymous" {
             assert_eq!(result["profiles"][0]["id"], format!("{id}-model"));
         }
-        for method in [
-            "harness_events",
-            "harness_operation",
-            "harness_session_read",
-            "harness_turn",
-        ] {
+        for method in ["harness_operation", "harness_session_read", "harness_turn"] {
             assert!(state
                 .services
                 .require::<mindos_node::harness::Harnesses>()

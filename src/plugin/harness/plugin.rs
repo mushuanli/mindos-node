@@ -7,6 +7,20 @@ use std::sync::Arc;
 
 pub struct Harness(pub crate::harness::HarnessPlugins);
 impl NodePlugin for Harness {
+    fn subscribe<'a>(
+        &'a self,
+        state: &'a Arc<State>,
+        identity: usize,
+        args: serde_json::Value,
+    ) -> crate::plugins::EventFuture<'a> {
+        Box::pin(async move {
+            state
+                .services
+                .require::<super::Harnesses>()?
+                .subscribe(state, identity, args)
+                .await
+        })
+    }
     fn mcp(&self) -> Option<&dyn crate::plugin::common::McpContribution> {
         Some(self)
     }

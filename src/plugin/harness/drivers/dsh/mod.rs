@@ -124,6 +124,9 @@ fn follow(
     });
 }
 impl HarnessDriver for Dsh {
+    fn subscribe(&self, args: Value) -> crate::plugins::EventFuture<'_> {
+        Box::pin(async move { Ok(crate::harness::events::stream(&self.events, args)) })
+    }
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":"dsh","projectRuntime":self.config.projects,
             "workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),

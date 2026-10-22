@@ -23,6 +23,7 @@ mod presentation;
 mod receipts;
 mod search;
 mod service;
+mod subscription;
 mod usage;
 pub use driver::HarnessDriver;
 pub use plugins::{HarnessPlugin, HarnessPlugins};

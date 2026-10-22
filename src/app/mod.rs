@@ -24,6 +24,8 @@ pub struct State {
     pub files: FileGate,
     pub workers: Workers,
     pub allowed_origins: Vec<String>,
+    pub event_slots: Arc<tokio::sync::Semaphore>,
+    pub event_stop: tokio_util::sync::CancellationToken,
 }
 impl State {
     pub fn host(auth: Auth, exports: Exports) -> Result<Self, String> {
@@ -45,6 +47,8 @@ impl State {
             files: FileGate::new(),
             workers: Workers::new(WORKER_LIMIT),
             allowed_origins: vec![],
+            event_slots: Arc::new(tokio::sync::Semaphore::new(32)),
+            event_stop: tokio_util::sync::CancellationToken::new(),
         }
     }
     /// Assemble the runtime with fresh random material.

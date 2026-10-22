@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 pub(super) fn descriptor(state: &State, identity: usize) -> Result<Value, Error> {
     let base = crate::plugin::common::object(
-        json!({"version":1,"httpEndpoint":"./","serverId":state.auth.server_id(),
+        json!({"version":1,"httpEndpoint":"./","serverId":state.auth.server_id(),"events":crate::http::subscriptions::capability(),
         "authorization":state.auth.client(identity).authorization(),"plugins":state.plugins.statuses()}),
     );
     state.plugins.capabilities(state, identity, base, false)

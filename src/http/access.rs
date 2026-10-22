@@ -47,6 +47,22 @@ pub fn identity(state: &State, headers: &HeaderMap) -> Result<usize, Error> {
     Ok(identity)
 }
 
+pub fn origin(state: &State, headers: &HeaderMap) -> Result<(), Error> {
+    let Some(origin) = headers.get("origin") else {
+        return Ok(());
+    };
+    let origin = origin.to_str().map_err(|_| Error::forbidden("EACCES"))?;
+    if state
+        .allowed_origins
+        .iter()
+        .any(|allowed| allowed == origin || allowed == "*")
+    {
+        Ok(())
+    } else {
+        Err(Error::forbidden("EACCES"))
+    }
+}
+
 /// Resolve the identity and prove it may read `alias`.
 pub fn export(
     state: &State,

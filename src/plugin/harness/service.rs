@@ -23,8 +23,8 @@ pub struct Harnesses {
     plugins: HarnessPlugins,
     receipts: Arc<Receipts>,
 }
-struct Profile {
-    driver: DriverSlot,
+pub(super) struct Profile {
+    pub(super) driver: DriverSlot,
     receipts: ReceiptScope,
     mutations: MutationQueues,
 }
@@ -184,66 +184,71 @@ impl Harnesses {
         }
         profile.driver.get()?.read(name, args).await
     }
-    pub async fn project_call(
+    fn project_context(
         &self,
-        state: &Arc<crate::app::State>,
+        state: &Arc<State>,
         identity: usize,
-        name: &str,
-        args: Value,
-    ) -> Result<Value, Error> {
-        let args = self.canonical_args(args)?;
+        args: &Value,
+    ) -> Result<(crate::projects::model::Project, ProfileConfig, ReceiptScope), Error> {
         let client = state.auth.try_client(identity)?;
-        if !client.may_harness(string(&args, "profileId")?) {
+        if !client.may_harness(string(args, "profileId")?) {
             return Err(Error::forbidden("EACCES"));
         }
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::unavailable());
         }
-        let mut project = state
+        let project = state
             .services
-            .get::<crate::projects::ProjectService>()
-            .ok_or_else(Error::unsupported)?
-            .get(identity, string(&args, "projectId")?)?;
+            .require::<crate::projects::ProjectService>()?
+            .get(identity, string(args, "projectId")?)?;
         crate::projects::service::authorize(state, identity, &project)?;
-        project = crate::projects::service::effective(state, identity, &project);
+        let project = crate::projects::service::effective(state, identity, &project);
         let config = self
             .configs
             .iter()
-            .find(|p| p.id == string(&args, "profileId").unwrap_or("") && p.projects)
-            .ok_or_else(Error::unsupported)?;
+            .find(|p| p.id == string(args, "profileId").unwrap_or("") && p.projects)
+            .ok_or_else(Error::unsupported)?
+            .clone();
         let receipts = self
             .receipts
             .scoped(json!(["project", project.owner, project.id, args["profileId"]]).to_string());
-        if name == "harness_operation" {
-            self.check_epoch(&args)?;
-            return receipts.operation(string(&args, "requestId")?).await;
-        }
-        if is_mutation(name) {
-            self.check_epoch(&args)?;
-            if let Some(receipt) = receipts
-                .existing(string(&args, "requestId")?, fingerprint(name, &args))
-                .await?
-            {
-                return Ok(receipt);
-            }
-        }
-        if is_mutation(name)
-            && crate::projects::service::mounts(&project)
+        Ok((project, config, receipts))
+    }
+    fn project_access(
+        &self,
+        state: &State,
+        identity: usize,
+        project: &mut crate::projects::model::Project,
+        args: &Value,
+        mutation: bool,
+    ) -> Result<(), Error> {
+        if mutation
+            && crate::projects::service::mounts(project)
                 .iter()
-                .any(|m| !client.may_execute(&m.alias))
+                .any(|m| !state.auth.client(identity).may_execute(&m.alias))
         {
             return Err(Error::forbidden("EACCES"));
         }
         if args["revision"].as_u64() != Some(project.revision) {
             return Err(Error::conflict("PROJECT_REVISION_CHANGED"));
         }
-        let read_only = args["readOnly"].as_bool().unwrap_or(false);
-        if read_only {
+        if args["readOnly"].as_bool() == Some(true) {
             project.access = "ro".into();
             for mount in &mut project.mounts {
                 mount.access = "ro".into();
             }
         }
+        Ok(())
+    }
+    async fn project_profile(
+        &self,
+        state: &Arc<State>,
+        identity: usize,
+        project: crate::projects::model::Project,
+        config: ProfileConfig,
+        receipts: ReceiptScope,
+        read_only: bool,
+    ) -> Result<Arc<Profile>, Error> {
         let key = format!(
             "{}:{}:{}:{}",
             project.id, project.revision, config.id, read_only
@@ -259,20 +264,90 @@ impl Harnesses {
             scoped.insert(
                 key.clone(),
                 Arc::new(Profile {
-                    driver: DriverSlot::new(self.plugins.clone(), config.clone(), Some(runtime))
+                    driver: DriverSlot::new(self.plugins.clone(), config, Some(runtime))
                         .map_err(|_| Error::unsupported())?,
                     receipts,
                     mutations: MutationQueues::default(),
                 }),
             );
         }
-        let profile = scoped[&key].clone();
-        drop(scoped);
+        Ok(scoped[&key].clone())
+    }
+    pub async fn project_call(
+        &self,
+        state: &Arc<State>,
+        identity: usize,
+        name: &str,
+        args: Value,
+    ) -> Result<Value, Error> {
+        let args = self.canonical_args(args)?;
+        let (mut project, config, receipts) = self.project_context(state, identity, &args)?;
+        if name == "harness_operation" {
+            self.check_epoch(&args)?;
+            return receipts.operation(string(&args, "requestId")?).await;
+        }
         if is_mutation(name) {
             self.check_epoch(&args)?;
-            return profile.mutate(name, args).await;
+            if let Some(receipt) = receipts
+                .existing(string(&args, "requestId")?, fingerprint(name, &args))
+                .await?
+            {
+                return Ok(receipt);
+            }
         }
-        profile.driver.get()?.read(name, args).await
+        self.project_access(state, identity, &mut project, &args, is_mutation(name))?;
+        let profile = self
+            .project_profile(
+                state,
+                identity,
+                project,
+                config,
+                receipts,
+                args["readOnly"].as_bool().unwrap_or(false),
+            )
+            .await?;
+        if is_mutation(name) {
+            profile.mutate(name, args).await
+        } else {
+            profile.driver.get()?.read(name, args).await
+        }
+    }
+    pub async fn subscribe(
+        &self,
+        state: &Arc<State>,
+        identity: usize,
+        args: Value,
+    ) -> Result<crate::plugin::common::EventStream, Error> {
+        let args = self.canonical_args(args)?;
+        let profile = if args.get("projectId").is_some() {
+            let (mut project, config, receipts) = self.project_context(state, identity, &args)?;
+            self.project_access(state, identity, &mut project, &args, false)?;
+            self.project_profile(
+                state,
+                identity,
+                project,
+                config,
+                receipts,
+                args["readOnly"].as_bool().unwrap_or(false),
+            )
+            .await?
+        } else {
+            let client = state.auth.try_client(identity)?;
+            if !client.legacy() || !client.may_harness(string(&args, "profileId")?) {
+                return Err(Error::forbidden("EACCES"));
+            }
+            self.profiles
+                .get(string(&args, "profileId")?)
+                .ok_or_else(Error::unsupported)?
+                .clone()
+        };
+        let driver = profile.driver.get()?;
+        let source = driver.subscribe(args.clone()).await?;
+        drop(driver);
+        let generation = profile.driver.changes();
+        Ok(super::subscription::stream(
+            profile, generation, args, source,
+        ))
     }
     pub async fn close_project(&self, id: &str) {
         let profiles = {

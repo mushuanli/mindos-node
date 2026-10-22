@@ -1,3 +1,5 @@
+#[path = "support/events.rs"]
+mod event_support;
 #[path = "support/dsh.rs"]
 mod fixture;
 use mindos_node::{config::Config, harness::Harnesses};
@@ -48,8 +50,7 @@ async fn mutate(service: &Harnesses, name: &str, request: &str, args: Value) -> 
     service.call(name, value).await.unwrap()
 }
 async fn events(service: &Harnesses) -> Value {
-    service
-        .call("harness_events", json!({"profileId":"dsh"}))
+    event_support::snapshot(&service, json!({"profileId":"dsh"}))
         .await
         .unwrap()
 }

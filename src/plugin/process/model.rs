@@ -81,6 +81,7 @@ pub struct Outcome {
 }
 
 pub struct Process {
+    changed: tokio::sync::watch::Sender<u64>,
     cancel: CancellationToken,
     status: Mutex<Status>,
 }
@@ -94,6 +95,7 @@ impl Default for Process {
 impl Process {
     pub fn new() -> Self {
         Self {
+            changed: tokio::sync::watch::channel(0).0,
             cancel: CancellationToken::new(),
             status: Mutex::new(Status::running()),
         }
@@ -114,6 +116,9 @@ impl Process {
     pub fn status(&self) -> Status {
         self.lock().clone()
     }
+    pub(super) fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
 
     /// The launcher never started; nothing ran.
     pub fn spawn_failed(&self) {
@@ -128,6 +133,7 @@ impl Process {
     /// Cancelled before the launcher was reached.
     pub fn cancelled_before_start(&self) {
         self.lock().state = "cancelled";
+        self.changed.send_modify(|revision| *revision += 1);
     }
 
     pub fn complete(&self, outcome: Outcome) {
@@ -137,12 +143,14 @@ impl Process {
         status.stdout = outcome.stdout;
         status.stderr = outcome.stderr;
         status.truncated = outcome.truncated;
+        self.changed.send_modify(|revision| *revision += 1);
     }
 
     fn fail(&self, state: &'static str, error: &'static str) {
         let mut status = self.lock();
         status.state = state;
         status.error = Some(error);
+        self.changed.send_modify(|revision| *revision += 1);
     }
 
     fn lock(&self) -> MutexGuard<'_, Status> {

@@ -18,91 +18,149 @@ fn fixture() -> (tempfile::TempDir, Arc<State>) {
 async fn project(state: &Arc<State>) -> Value {
     call(state,0,"project_register",json!({"name":"P","alias":"root","path":"project","access":"ro","mounts":[{"alias":"reference","path":"","at":"/workspace/ref","access":"ro"}]})).await.unwrap()["project"].clone()
 }
-async fn observe(state: &Arc<State>, project: &Value, watch: Option<&Value>) -> Value {
-    let mut args = json!({"projectId":project["id"],"revision":project["revision"]});
-    if let Some(watch) = watch {
-        args["watchId"] = watch["watchId"].clone();
-    }
-    call(state, 0, "project_watch", args).await.unwrap()
-}
 #[tokio::test]
-async fn detects_external_writes_new_directories_and_mounts_without_scanning_private_or_shadowed_trees(
-) {
+async fn subscription_waits_for_kernel_changes_and_releases_its_watch() {
+    use futures_util::StreamExt;
     let (root, state) = fixture();
     let project = project(&state).await;
-    let first = observe(&state, &project, None).await;
-    assert_eq!(first["truncated"], false);
-    assert_eq!(
-        observe(&state, &project, Some(&first)).await["version"],
-        first["version"]
+    let args = json!({"projectId":project["id"],"revision":project["revision"]});
+    let mut source = state
+        .plugins
+        .subscribe(&state, 0, "projects", args.clone())
+        .await
+        .unwrap();
+    let first = source.next().await.unwrap().unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(40), source.next())
+            .await
+            .is_err()
     );
-    let base = root.path().join("export/project");
-    std::fs::write(base.join("external.md"), "written by an independent CLI").unwrap();
-    let changed = observe(&state, &project, Some(&first)).await;
-    assert_ne!(changed["version"], first["version"]);
-    std::fs::write(base.join("ref/shadowed.md"), "private shadow").unwrap();
-    std::fs::write(base.join("private-native/auth.json"), "secret").unwrap();
-    assert_eq!(
-        observe(&state, &project, Some(&changed)).await["version"],
-        changed["version"]
-    );
-    std::fs::write(root.path().join("reference/visible.md"), "attached mount").unwrap();
-    let mounted = observe(&state, &project, Some(&changed)).await;
-    assert_ne!(mounted["version"], changed["version"]);
-    std::fs::create_dir(base.join("new")).unwrap();
-    let created = observe(&state, &project, Some(&mounted)).await;
-    std::fs::write(base.join("new/nested.md"), "later write").unwrap();
-    assert_ne!(
-        observe(&state, &project, Some(&created)).await["version"],
-        created["version"]
-    );
-    symlink(root.path().join("reference"), base.join("link")).unwrap();
-    let linked = observe(&state, &project, Some(&created)).await;
     std::fs::write(
-        root.path().join("reference/next.md"),
-        "authorized mount only",
+        root.path().join("export/project/from-cli.md"),
+        "external change",
     )
     .unwrap();
-    let version = observe(&state, &project, Some(&linked)).await;
-    assert_ne!(version["version"], linked["version"]);
-    assert!(version.as_object().unwrap().keys().all(|key| [
-        "watchId",
-        "version",
-        "gap",
-        "truncated"
-    ]
-    .contains(&key.as_str())));
-    let args = json!({"projectId":project["id"],"revision":project["revision"],"watchId":first["watchId"]});
-    assert_eq!(
-        call(&state, 0, "project_unwatch", args.clone())
-            .await
-            .unwrap()["released"],
-        true
-    );
-    let restarted = call(&state, 0, "project_watch", args).await.unwrap();
-    assert_eq!(restarted["gap"], true);
-    assert_ne!(restarted["watchId"], first["watchId"]);
-}
-#[tokio::test]
-async fn fences_watch_tokens_by_project_revision_owner_and_directory_identity() {
-    let (root, state) = fixture();
-    let project = project(&state).await;
-    let first = observe(&state, &project, None).await;
-    let args = json!({"projectId":project["id"],"revision":project["revision"],"watchId":first["watchId"]});
-    assert!(call(&state, 1, "project_watch", args.clone())
+    let next = tokio::time::timeout(std::time::Duration::from_secs(2), source.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_ne!(next["version"], first["version"]);
+    assert!(state
+        .plugins
+        .subscribe(&state, 1, "projects", args.clone())
         .await
         .is_err());
     let mut stale = args.clone();
-    stale["revision"] = json!(2);
-    assert_eq!(
-        call(&state, 0, "project_watch", stale)
-            .await
-            .unwrap_err()
-            .code,
-        "PROJECT_REVISION_CHANGED"
-    );
+    stale["revision"] = json!(999);
+    assert!(state
+        .plugins
+        .subscribe(&state, 0, "projects", stale)
+        .await
+        .is_err());
+    drop(source);
+    for _ in 0..20 {
+        drop(
+            state
+                .plugins
+                .subscribe(&state, 0, "projects", args.clone())
+                .await
+                .unwrap(),
+        );
+    }
+}
+async fn next(source: &mut mindos_node::plugins::EventStream) -> Value {
+    use futures_util::StreamExt;
+    tokio::time::timeout(std::time::Duration::from_secs(2), source.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+}
+#[tokio::test]
+async fn detects_external_writes_without_exposing_private_or_shadowed_trees() {
+    use futures_util::StreamExt;
+    let (root, state) = fixture();
+    let project = project(&state).await;
+    let args = json!({"projectId":project["id"],"revision":project["revision"]});
+    let mut source = state
+        .plugins
+        .subscribe(&state, 0, "projects", args)
+        .await
+        .unwrap();
+    let first = next(&mut source).await;
+    assert_eq!(first["truncated"], false);
     let base = root.path().join("export/project");
-    std::fs::rename(&base, root.path().join("export/old")).unwrap();
-    std::fs::create_dir(&base).unwrap();
-    assert!(call(&state, 0, "project_watch", args).await.is_err());
+    std::fs::write(base.join("external.md"), "external").unwrap();
+    let changed = next(&mut source).await;
+    assert_ne!(changed["version"], first["version"]);
+    std::fs::write(base.join("ref/shadowed.md"), "shadow").unwrap();
+    std::fs::write(base.join("private-native/auth.json"), "private").unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(40), source.next())
+            .await
+            .is_err()
+    );
+    std::fs::write(root.path().join("reference/visible.md"), "mounted").unwrap();
+    let mounted = next(&mut source).await;
+    assert_ne!(mounted["version"], changed["version"]);
+    std::fs::create_dir(base.join("new")).unwrap();
+    next(&mut source).await;
+    std::fs::write(base.join("new/nested.md"), "nested").unwrap();
+    next(&mut source).await;
+    symlink(root.path().join("reference"), base.join("link")).unwrap();
+    next(&mut source).await;
+    drop(source);
+    for _ in 0..20 {
+        drop(
+            state
+                .plugins
+                .subscribe(
+                    &state,
+                    0,
+                    "projects",
+                    json!({"projectId":project["id"],"revision":project["revision"]}),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+}
+#[tokio::test]
+async fn fences_subscriptions_by_owner_revision_and_directory_identity() {
+    use futures_util::StreamExt;
+    let (root, state) = fixture();
+    let project = project(&state).await;
+    let args = json!({"projectId":project["id"],"revision":project["revision"]});
+    assert!(state
+        .plugins
+        .subscribe(&state, 1, "projects", args.clone())
+        .await
+        .is_err());
+    let mut stale = args.clone();
+    stale["revision"] = json!(999);
+    assert!(state
+        .plugins
+        .subscribe(&state, 0, "projects", stale)
+        .await
+        .is_err());
+    let mut source = state
+        .plugins
+        .subscribe(&state, 0, "projects", args)
+        .await
+        .unwrap();
+    next(&mut source).await;
+    std::fs::rename(
+        root.path().join("export/project"),
+        root.path().join("export/old"),
+    )
+    .unwrap();
+    std::fs::create_dir(root.path().join("export/project")).unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), source.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
 }

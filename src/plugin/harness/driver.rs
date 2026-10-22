@@ -4,6 +4,9 @@ use futures_util::future::BoxFuture;
 use serde_json::Value;
 
 pub trait HarnessDriver: Send + Sync {
+    fn subscribe(&self, _args: Value) -> crate::plugin::common::EventFuture<'_> {
+        Box::pin(async { Err(Error::unsupported()) })
+    }
     fn descriptor(&self) -> Value;
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>>;
     fn execute<'a>(&'a self, name: &'a str, args: &'a Value)

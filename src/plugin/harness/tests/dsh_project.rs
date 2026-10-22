@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 #[allow(dead_code)]
 #[path = "support/dsh.rs"]
 mod native;
@@ -83,8 +84,12 @@ async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
             .services
             .require::<mindos_node::harness::Harnesses>()
             .unwrap()
-            .project_call(&state, who, "harness_events", args.clone())
+            .subscribe(&state, who, args.clone())
             .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
             .unwrap();
         if page["events"]
             .as_array()

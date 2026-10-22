@@ -38,16 +38,18 @@ fn root(state: &State, alias: &str, path: &str, at: &str) -> Result<Root, Error>
     let physical = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
     if state
         .services
-        .require::<crate::harness::Harnesses>()?
-        .private_homes()
+        .get::<crate::harness::Harnesses>()
+        .into_iter()
+        .flat_map(|harness| harness.private_homes())
         .any(|home| physical.starts_with(home))
     {
         return Err(Error::forbidden("WATCH_PRIVATE_ROOT"));
     }
     let excluded = state
         .services
-        .require::<crate::harness::Harnesses>()?
-        .private_homes()
+        .get::<crate::harness::Harnesses>()
+        .into_iter()
+        .flat_map(|harness| harness.private_homes())
         .filter(|home| home.starts_with(&physical))
         .map(|home| home.to_path_buf())
         .collect();

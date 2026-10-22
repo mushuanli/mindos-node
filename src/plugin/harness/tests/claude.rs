@@ -1,3 +1,5 @@
+#[path = "support/events.rs"]
+mod event_support;
 use mindos_node::{config::Config, harness::Harnesses};
 use serde_json::{json, Value};
 
@@ -59,7 +61,9 @@ async fn idle_reaping_keeps_history_and_receipts_and_never_unloads_a_pending_dia
     )
     .await;
     for _ in 0..100 {
-        if !call(&service, "harness_events", json!({})).await["requests"]
+        if !event_support::snapshot(&service, json!({"profileId":"claude"}))
+            .await
+            .unwrap()["requests"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -71,7 +75,9 @@ async fn idle_reaping_keeps_history_and_receipts_and_never_unloads_a_pending_dia
     service
         .reap_idle(std::time::Instant::now() + std::time::Duration::from_secs(3600))
         .await;
-    let waiting = call(&service, "harness_events", json!({})).await;
+    let waiting = event_support::snapshot(&service, json!({"profileId":"claude"}))
+        .await
+        .unwrap();
     assert_eq!(waiting["requests"][0]["id"], "question-request");
     assert_eq!(
         call(&service, "harness_session_info", json!({"sessionId":id})).await["session"]["owned"],
@@ -313,7 +319,9 @@ async fn sdk_roundtrips_native_history_receipts_approvals_questions_and_interrup
         "committed"
     );
     idle(&service, id).await;
-    let events = call(&service, "harness_events", json!({})).await;
+    let events = event_support::snapshot(&service, json!({"profileId":"claude"}))
+        .await
+        .unwrap();
     let tool_events = events["events"]
         .as_array()
         .unwrap()
@@ -349,7 +357,9 @@ async fn sdk_roundtrips_native_history_receipts_approvals_questions_and_interrup
         .await;
         assert_eq!(turn["outcome"], "committed");
         for _ in 0..100 {
-            if !call(&service, "harness_events", json!({})).await["requests"]
+            if !event_support::snapshot(&service, json!({"profileId":"claude"}))
+                .await
+                .unwrap()["requests"]
                 .as_array()
                 .unwrap()
                 .is_empty()

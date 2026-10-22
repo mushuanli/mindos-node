@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 const MAX_EVENTS: usize = 1024;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub struct Events {
+    changed: tokio::sync::watch::Sender<u64>,
     pub epoch: String,
     pub runtime: Option<std::sync::Arc<crate::projects::runtime::ProjectRuntime>>,
     next: u64,
@@ -21,6 +22,7 @@ impl Events {
         let mut bytes = [0u8; 16];
         getrandom::getrandom(&mut bytes).expect("random unavailable");
         Self {
+            changed: tokio::sync::watch::channel(0).0,
             epoch: bytes.iter().map(|b| format!("{b:02x}")).collect(),
             runtime: None,
             next: 0,
@@ -55,6 +57,7 @@ impl Events {
                 self.bytes -= size;
             }
         }
+        self.changed.send_replace(self.next);
         Ok(())
     }
     fn track(&mut self, message: &Value) -> Result<(), Error> {
@@ -115,7 +118,7 @@ impl Events {
             .last()
             .and_then(|e| e["seq"].as_u64())
             .unwrap_or(self.next);
-        json!({"epoch":self.epoch,"cursor":cursor,"gap":gap,"events":events,
+        json!({"epoch":self.epoch,"cursor":cursor,"after":if gap {first.saturating_sub(1)}else{after},"gap":gap,"events":events,
             "requests":self.requests.values().collect::<Vec<_>>()})
     }
     pub fn position(&self) -> Value {
@@ -126,9 +129,97 @@ impl Events {
     }
 }
 
+/// A stream retains only the buffer's weak identity, never its native driver.
+pub(super) fn stream(
+    events: &std::sync::Arc<std::sync::Mutex<Events>>,
+    args: Value,
+) -> crate::plugin::common::EventStream {
+    use futures_util::stream;
+    let receiver = events.lock().unwrap().changed.subscribe();
+    let state = (std::sync::Arc::downgrade(events), receiver, args, true);
+    Box::pin(stream::unfold(
+        state,
+        |(weak, mut receiver, mut cursor, ready)| async move {
+            if !ready && receiver.changed().await.is_err() {
+                return None;
+            }
+            receiver.borrow_and_update();
+            let Some(events) = weak.upgrade() else {
+                return None;
+            };
+            let page = events.lock().unwrap().page(
+                cursor["eventEpoch"].as_str(),
+                cursor["after"].as_u64().unwrap_or(0),
+            );
+            cursor["after"] = page["cursor"].clone();
+            cursor["eventEpoch"] = page["epoch"].clone();
+            let more = page["events"]
+                .as_array()
+                .is_some_and(|rows| rows.len() == 128);
+            Some((
+                Ok(super::presentation::events(page)),
+                (weak, receiver, cursor, more),
+            ))
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn streams_full_pages_immediately_then_sleeps_until_a_real_event() {
+        use futures_util::StreamExt;
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Events::new()));
+        for index in 0..300 {
+            events
+                .lock()
+                .unwrap()
+                .push(json!({"method":"item/delta","params":{"index":index}}))
+                .unwrap();
+        }
+        let mut source = stream(&events, json!({}));
+        assert_eq!(
+            source.next().await.unwrap().unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            128
+        );
+        assert_eq!(
+            source.next().await.unwrap().unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            128
+        );
+        assert_eq!(
+            source.next().await.unwrap().unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            44
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), source.next())
+                .await
+                .is_err()
+        );
+        events
+            .lock()
+            .unwrap()
+            .push(json!({"method":"turn/completed","params":{"threadId":"s"}}))
+            .unwrap();
+        let page = tokio::time::timeout(std::time::Duration::from_secs(1), source.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(page["events"][0]["message"]["method"], "turn/completed");
+        assert_eq!(std::sync::Arc::strong_count(&events), 1);
+        drop(events);
+        assert!(source.next().await.is_none());
+    }
     #[test]
     fn execution_and_pending_dialogs_pin_the_runtime_until_explicit_resolution() {
         let mut events = Events::new();

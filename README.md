@@ -247,7 +247,7 @@ MCP 代码分为 [传输入口](src/plugin/mcp/mod.rs)、[协议校验](src/plug
 
 Codex app-server 的 stdin 写入和 stdout 读取独立推进；大 prompt 的管道背压不会停止接收其他会话的增量事件和 RPC 回执。请求仍使用有界队列与最多 128 个在途原生调用。会话写入按 session 串行；删除/归档的拓扑锁发生冲突时返回 EBUSY，不排队占住共享拓扑锁，避免一项待授权操作和随后排队的删除拖住其他会话。Claude 初始化仅持有当前会话槽位的锁，最多 16 个槽位同时覆盖已启动和初始化中的会话；未完成握手的会话不阻塞其他会话的控制或实时列表。项目关闭先 fence 对应驱动，再释放共享表锁等待回收；用量文件读取只锁当前会话的游标。
 
-原生输出是增量事件，但 `/mcp` 的 `harness_events` 返回有序的有界事件页，不是持续 SSE 推送。宿主会话视图在活动时约每 200ms、空闲时约每 1000ms 拉取，网络和历史/元数据读取耗时会延长实际周期。首字等待和工具执行停顿需结合 `harness.turn.started`、`harness.stream.error`、`harness.turn.completed`/`failed` 排查，不能仅凭界面停顿断定模型没有使用流式协议。
+原生输出通过 `POST /v1/events` 的 fetch SSE 推送。一个应用运行时按节点与身份共享连接，Harness、目录和进程通过 `{id, plugin, args}` 复用；修改命令和回执仍走 HTTP/MCP。Harness 沿用有界 epoch/cursor/gap 回放，文本事件满页立即追赶，断线按已消费游标恢复，缺口重新读权威快照。宿主会话与侧栏由事件触发更新，并保留 15 秒权威状态核对；进程终态通过通知等待。0.4 删除原事件及目录轮询工具，不提供旧节点回退，节点和客户端需配套升级。首字等待和工具停顿仍需结合 turn 生命周期诊断。
 
 验证（在 itookit 根目录）：
 
@@ -335,9 +335,9 @@ python3 src/plugin/harness/tests/real_claude.py
 
 ### 项目目录变化
 
-发现元数据的 `fileWatch: true` 声明 `project_watch` / `project_unwatch`。请求携带 projectId/revision，可重用返回的 watchId；响应仅为 watchId/version/gap/truncated，不含宿主路径、文件名或正文。Linux inotify 监听 pinned 项目根与 mounts，不跟随链接，不扫描隐藏目录、原生 home 或被挂载遮蔽的目录。外部编辑器、独立 CLI、新目录中的变化均推进版本；目录变动或队列溢出重建监听，溢出报告 gap。
+发现元数据的 `directoryEvents: true` 声明项目目录订阅，`events` 描述统一 SSE 入口。projects 订阅携带 projectId/revision，只推送 version/gap/truncated，不包含宿主路径、文件名或正文。Linux inotify 使用 pinned 根与 mounts，不跟随链接，不扫描隐藏目录、原生 home 或被挂载遮蔽的目录；异步等待内核就绪，新增目录与队列溢出重建监听并重新注册等待句柄，溢出报告 gap。
 
-最多 16 个观察，空闲 60 秒后在后续请求清理；客户端关闭发送 unwatch，授权变更/项目移除释放相应观察。建立监听最多 2048 个目录、50000 项及 2 秒，覆盖不足返回 truncated；driver 每 30 秒推进一次部分覆盖版本以补充刷新。旧服务器没有 fileWatch 时不调用新工具。观察按 owner/project/revision 及根目录身份核验，授权失效立即停止读取；没有原生会话的项目仍观察目录。目录变更不表示外部会话正在运行，也不授予执行控制。
+最多同时 16 个目录订阅，关闭流即释放监听，不维护 watchId 租约或 unwatch 操作。建立监听最多覆盖 2048 个目录、50000 项及 2 秒，覆盖不足明确返回 truncated，不能据此声称完整观察。授权与项目 revision 在发送前重新核验，没有原生会话也能观察目录。目录变化不表示外部会话正在运行，也不授予控制权。
 
 Codex/Claude 子进程只继承允许列表内的环境；代理保留 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 及各自小写形式，证书保留 `SSL_CERT_FILE/SSL_CERT_DIR`。大小写同时存在时原样传入，由原生客户端决定优先级。不把代理凭据写入日志，不自动覆盖全局代理设置。
 

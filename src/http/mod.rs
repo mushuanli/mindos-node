@@ -10,6 +10,7 @@ mod events;
 pub mod handlers;
 pub mod query;
 pub mod range;
+pub(crate) mod subscriptions;
 
 use crate::app::State;
 use axum::{
@@ -58,6 +59,7 @@ pub fn router(state: Arc<State>, origins: &[String]) -> Result<Router, String> {
             get(handlers::capabilities::capabilities),
         )
         .merge(state.plugins.routes())
+        .merge(subscriptions::routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             access::authenticate,

@@ -575,62 +575,6 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Poll ordered events and outstanding interactions; gap means history must be refreshed",
-    "inputSchema": {
-      "dependentRequired": {
-        "projectId": [
-          "revision"
-        ],
-        "readOnly": [
-          "projectId",
-          "revision"
-        ],
-        "revision": [
-          "projectId"
-        ]
-      },
-      "properties": {
-        "after": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "eventEpoch": {
-          "type": "string"
-        },
-        "profileId": {
-          "description": "Authorized identifier from harness_profiles.",
-          "type": "string"
-        },
-        "projectId": {
-          "description": "Identifier from project_list. Project context also requires revision; non-legacy principals require project context.",
-          "type": "string"
-        },
-        "readOnly": {
-          "type": "boolean"
-        },
-        "revision": {
-          "minimum": 1,
-          "type": "integer"
-        },
-        "toolDetail": {
-          "enum": [
-            "summary"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "profileId"
-      ],
-      "type": "object"
-    },
-    "name": "harness_events"
-  },
-  {
-    "annotations": {
-      "openWorldHint": true,
-      "readOnlyHint": true
-    },
     "description": "Query a retained mutation receipt without replaying its effect",
     "inputSchema": {
       "dependentRequired": {

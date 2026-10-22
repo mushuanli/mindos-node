@@ -12,7 +12,7 @@ use crate::{
 use std::sync::{Arc, Mutex};
 
 pub struct ProjectService {
-    pub(super) watches: Mutex<super::watch::Registry>,
+    pub(super) watch_slots: Arc<tokio::sync::Semaphore>,
     pub(super) store: Store,
     pub launcher: Arc<dyn super::runtime::ProjectLauncher>,
     admission: Mutex<()>,
@@ -51,7 +51,7 @@ impl ProjectService {
             }
         }
         Ok(Self {
-            watches: Mutex::new(super::watch::Registry::new()),
+            watch_slots: Arc::new(tokio::sync::Semaphore::new(16)),
             store,
             launcher: Arc::new(super::runtime::Bubblewrap {
                 network: config.network,
