@@ -85,6 +85,23 @@ impl Context {
     }
 }
 impl Process {
+    #[cfg(test)]
+    pub(super) fn idle_fixture(id: &str) -> (Arc<Self>, watch::Sender<bool>) {
+        let (sender, _) = mpsc::channel(1);
+        let (exit, exited) = watch::channel(false);
+        (
+            Arc::new(Self {
+                models: Arc::new(Mutex::new(json!({}))),
+                commands: Arc::new(Mutex::new(json!([]))),
+                sender,
+                session: Arc::new(Mutex::new(json!({"id":id,"status":"idle","updatedAt":0}))),
+                items: Arc::new(Mutex::new(Vec::new())),
+                stop: CancellationToken::new(),
+                exited,
+            }),
+            exit,
+        )
+    }
     pub async fn start(
         config: &ProfileConfig,
         runtime: Option<Arc<ProjectRuntime>>,
@@ -149,6 +166,9 @@ impl Process {
     }
     pub fn alive(&self) -> bool {
         !self.stop.is_cancelled()
+    }
+    pub fn exited(&self) -> bool {
+        *self.exited.borrow()
     }
     pub fn close(&self) {
         self.stop.cancel();

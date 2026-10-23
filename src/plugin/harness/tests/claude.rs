@@ -4,6 +4,170 @@ use mindos_node::{config::Config, harness::Harnesses};
 use serde_json::{json, Value};
 
 #[tokio::test]
+async fn session_capacity_reclaims_idle_processes_but_keeps_history_receipts_and_pending_turns() {
+    let root = tempfile::tempdir().unwrap();
+    let service = fixture(root.path());
+    let question = mutate(
+        &service,
+        "harness_create",
+        "capacity-question",
+        json!({"workspaceId":"workspace"}),
+    )
+    .await["result"]["session"]["id"]
+        .clone();
+    mutate(
+        &service,
+        "harness_turn",
+        "capacity-question-turn",
+        json!({"sessionId":question,"prompt":"question"}),
+    )
+    .await;
+    let active = mutate(
+        &service,
+        "harness_create",
+        "capacity-active",
+        json!({"workspaceId":"workspace"}),
+    )
+    .await["result"]["session"]["id"]
+        .clone();
+    mutate(
+        &service,
+        "harness_turn",
+        "capacity-active-turn",
+        json!({"sessionId":active,"prompt":"wait"}),
+    )
+    .await;
+    let mut first = Value::Null;
+    for index in 0..20 {
+        let created = mutate(
+            &service,
+            "harness_create",
+            &format!("capacity-create-{index}"),
+            json!({"workspaceId":"workspace"}),
+        )
+        .await;
+        assert_eq!(created["outcome"], "committed", "{created}");
+        let id = created["result"]["session"]["id"].clone();
+        if index == 0 {
+            first = id.clone();
+        }
+        assert_eq!(
+            mutate(
+                &service,
+                "harness_turn",
+                &format!("capacity-turn-{index}"),
+                json!({"sessionId":id,"prompt":"hello"})
+            )
+            .await["outcome"],
+            "committed"
+        );
+        idle(&service, &id).await;
+    }
+    assert_eq!(
+        call(&service, "harness_session_info", json!({"sessionId":first})).await["session"]
+            ["owned"],
+        false
+    );
+    assert!(
+        call(&service, "harness_session_read", json!({"sessionId":first})).await["turns"]
+            .to_string()
+            .contains("Fixture reply")
+    );
+    assert_eq!(
+        call(
+            &service,
+            "harness_operation",
+            json!({"epoch":"epoch","requestId":"capacity-turn-0"})
+        )
+        .await["outcome"],
+        "committed"
+    );
+    assert_eq!(
+        call(
+            &service,
+            "harness_session_info",
+            json!({"sessionId":question})
+        )
+        .await["session"]["owned"],
+        true
+    );
+    assert_eq!(
+        call(
+            &service,
+            "harness_session_info",
+            json!({"sessionId":active})
+        )
+        .await["session"]["status"],
+        "active"
+    );
+    assert_eq!(
+        event_support::snapshot(&service, json!({"profileId":"claude"}))
+            .await
+            .unwrap()["requests"][0]["id"],
+        "question-request"
+    );
+    assert_eq!(
+        mutate(
+            &service,
+            "harness_resume",
+            "capacity-resume",
+            json!({"sessionId":first})
+        )
+        .await["outcome"],
+        "committed"
+    );
+    assert_eq!(
+        mutate(
+            &service,
+            "harness_turn",
+            "capacity-resumed-turn",
+            json!({"sessionId":first,"prompt":"hello again"})
+        )
+        .await["outcome"],
+        "committed"
+    );
+    idle(&service, &first).await;
+    service.close().await;
+}
+
+#[tokio::test]
+async fn session_capacity_rejects_new_sessions_when_every_loaded_turn_is_active() {
+    let root = tempfile::tempdir().unwrap();
+    let service = fixture(root.path());
+    for index in 0..16 {
+        let created = mutate(
+            &service,
+            "harness_create",
+            &format!("active-create-{index}"),
+            json!({"workspaceId":"workspace"}),
+        )
+        .await;
+        assert_eq!(created["outcome"], "committed");
+        let id = created["result"]["session"]["id"].clone();
+        assert_eq!(
+            mutate(
+                &service,
+                "harness_turn",
+                &format!("active-turn-{index}"),
+                json!({"sessionId":id,"prompt":"wait"})
+            )
+            .await["outcome"],
+            "committed"
+        );
+    }
+    let rejected = mutate(
+        &service,
+        "harness_create",
+        "active-overflow",
+        json!({"workspaceId":"workspace"}),
+    )
+    .await;
+    assert_eq!(rejected["outcome"], "not-committed");
+    assert_eq!(rejected["code"], "CLAUDE_SESSION_LIMIT");
+    service.close().await;
+}
+
+#[tokio::test]
 async fn idle_reaping_keeps_history_and_receipts_and_never_unloads_a_pending_dialog() {
     let root = tempfile::tempdir().unwrap();
     let service = fixture(root.path());

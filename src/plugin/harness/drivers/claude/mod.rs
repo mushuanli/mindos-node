@@ -189,7 +189,7 @@ impl Claude {
     async fn attach(&self, session: Value, resume: bool) -> Result<Value, Error> {
         let id = string(&session, "id")?.to_owned();
         self.check_read()?;
-        let slot = self.sessions.slot(&id)?;
+        let slot = self.sessions.slot(&id, &self.events).await?;
         let mut attached = slot.lock().await;
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::unavailable());

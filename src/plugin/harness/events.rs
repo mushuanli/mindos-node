@@ -124,6 +124,13 @@ impl Events {
     pub fn position(&self) -> Value {
         json!({"after":self.next,"eventEpoch":self.epoch})
     }
+    pub fn thread_idle(&self, id: &str) -> bool {
+        !self.active.contains(id)
+            && !self
+                .requests
+                .values()
+                .any(|request| request["params"]["threadId"] == id)
+    }
     pub fn idle_since(&self) -> Option<std::time::Instant> {
         (self.active.is_empty() && self.requests.is_empty()).then_some(self.last_activity)
     }
