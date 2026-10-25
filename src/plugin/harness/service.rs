@@ -1,4 +1,4 @@
-use super::mutation_queue::MutationQueues;
+use super::mutation_queue::{MutationGuard, MutationQueues};
 use super::receipts::{ReceiptScope, Receipts, Reservation};
 use super::{config::ProfileConfig, driver_slot::DriverSlot, HarnessPlugins};
 use crate::app::State;
@@ -107,6 +107,7 @@ impl Harnesses {
             .iter()
             .map(|config| {
                 let mut descriptor = self.profiles[&config.id].driver.descriptor();
+                descriptor["capabilities"]["commandOutputs"] = json!(true);
                 if !config.aliases.is_empty() {
                     descriptor["aliases"] = json!(config.aliases);
                 }
@@ -174,15 +175,41 @@ impl Harnesses {
             .profiles
             .get(string(&args, "profileId")?)
             .ok_or_else(|| Error::not_found("ENOENT"))?;
+        self.profile_call(profile, name, args).await
+    }
+    async fn profile_call(
+        &self,
+        profile: &Arc<Profile>,
+        name: &str,
+        args: Value,
+    ) -> Result<Value, Error> {
+        let referenced = output_mode(name, &args)?;
         if name == "harness_operation" {
             self.check_epoch(&args)?;
-            return profile.operation(string(&args, "requestId")?).await;
+            return profile
+                .operation(string(&args, "requestId")?)
+                .await
+                .map(|value| self.project_receipt(name, value, referenced));
+        }
+        if name == "harness_command_output" {
+            self.check_epoch(&args)?;
+            return profile.receipts.output(args, self.epoch.clone()).await;
         }
         if is_mutation(name) {
             self.check_epoch(&args)?;
-            return profile.mutate(name, args).await;
+            return profile
+                .mutate(name, args)
+                .await
+                .map(|value| self.project_receipt(name, value, referenced));
         }
-        profile.driver.get()?.read(name, args).await
+        profile.read(name, args).await
+    }
+    fn project_receipt(&self, name: &str, receipt: Value, referenced: bool) -> Value {
+        if matches!(name, "harness_operation" | "harness_command") {
+            super::command_outputs::project(receipt, &self.epoch, referenced)
+        } else {
+            super::command_outputs::public_receipt(receipt)
+        }
     }
     fn project_context(
         &self,
@@ -282,18 +309,11 @@ impl Harnesses {
     ) -> Result<Value, Error> {
         let args = self.canonical_args(args)?;
         let (mut project, config, receipts) = self.project_context(state, identity, &args)?;
-        if name == "harness_operation" {
-            self.check_epoch(&args)?;
-            return receipts.operation(string(&args, "requestId")?).await;
+        if name == "harness_command_output" {
+            self.project_access(state, identity, &mut project, &args, false)?;
         }
-        if is_mutation(name) {
-            self.check_epoch(&args)?;
-            if let Some(receipt) = receipts
-                .existing(string(&args, "requestId")?, fingerprint(name, &args))
-                .await?
-            {
-                return Ok(receipt);
-            }
+        if let Some(receipt) = self.retained(name, &args, &receipts).await? {
+            return Ok(receipt);
         }
         self.project_access(state, identity, &mut project, &args, is_mutation(name))?;
         let profile = self
@@ -306,11 +326,55 @@ impl Harnesses {
                 args["readOnly"].as_bool().unwrap_or(false),
             )
             .await?;
-        if is_mutation(name) {
-            profile.mutate(name, args).await
-        } else {
-            profile.driver.get()?.read(name, args).await
+        self.profile_call(&profile, name, args).await
+    }
+    async fn retained(
+        &self,
+        name: &str,
+        args: &Value,
+        receipts: &ReceiptScope,
+    ) -> Result<Option<Value>, Error> {
+        let referenced = output_mode(name, args)?;
+        if name == "harness_operation" {
+            self.check_epoch(args)?;
+            return self
+                .scoped_operation(receipts, args, referenced)
+                .await
+                .map(Some);
         }
+        if name == "harness_command_output" {
+            self.check_epoch(args)?;
+            return receipts
+                .output(args.clone(), self.epoch.clone())
+                .await
+                .map(Some);
+        }
+        if is_mutation(name) {
+            self.check_epoch(args)?;
+            return receipts
+                .existing(string(args, "requestId")?, fingerprint(name, args))
+                .await
+                .map(|value| value.map(|receipt| self.project_receipt(name, receipt, referenced)));
+        }
+        Ok(None)
+    }
+    async fn scoped_operation(
+        &self,
+        receipts: &ReceiptScope,
+        args: &Value,
+        referenced: bool,
+    ) -> Result<Value, Error> {
+        let drivers = self
+            .scoped
+            .lock()
+            .await
+            .values()
+            .filter(|profile| profile.receipts.same_scope(receipts))
+            .filter_map(|profile| profile.driver.peek())
+            .collect();
+        reconcile_receipt(receipts, string(args, "requestId")?, drivers)
+            .await
+            .map(|receipt| self.project_receipt("harness_operation", receipt, referenced))
     }
     pub async fn subscribe(
         &self,
@@ -401,6 +465,29 @@ impl Harnesses {
 }
 
 impl Profile {
+    async fn read(&self, name: &str, args: Value) -> Result<Value, Error> {
+        let started = std::time::Instant::now();
+        let result = match self.driver.get() {
+            Ok(driver) => driver.read(name, args.clone()).await,
+            Err(error) => Err(error),
+        };
+        if name == "harness_query" {
+            let operation = args["requestId"].as_str().filter(|id| {
+                id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+            });
+            crate::core::events::emit(
+                crate::core::events::Level::Info,
+                "harness.query.result",
+                json!({"operation":"harness.query","operationId":operation,"stage":"native",
+                    "outcome":if result.is_ok() {"succeeded"} else {"failed"},
+                    "code":result.as_ref().err().map(|error|error.code),"durationMs":started.elapsed().as_millis()}),
+            );
+        }
+        result
+    }
     async fn mutate(self: &Arc<Self>, name: &str, args: Value) -> Result<Value, Error> {
         let id = string(&args, "requestId")?.to_owned();
         if !crate::core::ids::is_identifier_within(&id, 128) {
@@ -421,7 +508,7 @@ impl Profile {
         }
     }
     async fn operation(&self, id: &str) -> Result<Value, Error> {
-        self.receipts.operation(id).await
+        reconcile_receipt(&self.receipts, id, self.driver.peek().into_iter().collect()).await
     }
     async fn execute(
         self: Arc<Self>,
@@ -430,26 +517,238 @@ impl Profile {
         id: String,
         _permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Value {
-        let result = self.execute_native(&name, &args).await;
-        let receipt = receipt(&id, result);
-        self.receipts.finish(&id, receipt).await.unwrap_or_else(
-            |_| json!({"outcome":"unknown","requestId":id,"code":"HARNESS_RECEIPT_STORAGE"}),
-        )
+        let started = std::time::Instant::now();
+        let mut dispatched = false;
+        // Keep serialization through receipt persistence and the driver's settlement callback.
+        let (result, _serial) = self.execute_native(&name, &args, &mut dispatched).await;
+        if !dispatched {
+            report_preparation_failure(&id, &name, &result, started);
+        }
+        if name == "harness_fork" && args.get("lastTurnId").is_some() {
+            checkpoint_diagnostic(&id, &args, &result, started.elapsed());
+        }
+        report_command_result(&name, &id, &args, &result, dispatched, started);
+        self.commit(&id, result, dispatched).await
     }
-    async fn execute_native(&self, name: &str, args: &Value) -> Result<Value, Error> {
+    async fn commit(&self, id: &str, result: Result<Value, Error>, dispatched: bool) -> Value {
+        let receipt = receipt(id, result, dispatched);
+        let receipt = self.receipts.finish(id, receipt).await.unwrap_or_else(
+            |_| json!({"outcome":"unknown","requestId":id,"code":"HARNESS_RECEIPT_STORAGE"}),
+        );
+        if let Some(driver) = self.driver.peek() {
+            driver.operation_settled(id, &receipt);
+        }
+        receipt
+    }
+    async fn execute_native(
+        &self,
+        name: &str,
+        args: &Value,
+        dispatched: &mut bool,
+    ) -> (Result<Value, Error>, Option<MutationGuard>) {
+        let args = execution_args(name, args);
+        let (args, serial) = match self.prepare_native(name, &args).await {
+            Ok(prepared) => prepared,
+            Err(error) => return (Err(error), None),
+        };
+        let result = self.dispatch(name, &args, dispatched).await;
+        (result, serial)
+    }
+    async fn dispatch(
+        &self,
+        name: &str,
+        args: &Value,
+        dispatched: &mut bool,
+    ) -> Result<Value, Error> {
+        let driver = self.driver.get()?;
+        match driver.execute_checked(name, &args).await {
+            super::driver::NativeExecution::NotStarted(error) => Err(error),
+            super::driver::NativeExecution::Dispatched(result) => {
+                *dispatched = true;
+                result
+            }
+        }
+    }
+    async fn prepare_native(
+        &self,
+        name: &str,
+        args: &Value,
+    ) -> Result<(Value, Option<MutationGuard>), Error> {
+        if name == "harness_fork"
+            && args.get("lastTurnId").is_some()
+            && self.driver.get()?.descriptor()["capabilities"]["checkpointFork"] != true
+        {
+            return Err(Error::unsupported());
+        }
         // Replies and interruption must pass a start/resume waiting on native approval.
-        let _serial = if matches!(name, "harness_respond" | "harness_interrupt") {
+        let descriptor = self.command_descriptor(name, args).await?;
+        let query = descriptor
+            .as_ref()
+            .is_some_and(|row| row["execution"] == "query");
+        let serial = if matches!(name, "harness_respond" | "harness_interrupt") || query {
             None
         } else {
             Some(self.mutations.acquire(name, args).await?)
         };
-        self.driver.get()?.execute(name, args).await
+        let mut args = args.clone();
+        if let Some(descriptor) = descriptor {
+            super::commands::verify(&args, &descriptor)?;
+            args["expectedCommand"] =
+                json!({"id":descriptor["id"],"revision":descriptor["revision"]});
+        }
+        Ok((args, serial))
+    }
+    async fn command_descriptor(&self, name: &str, args: &Value) -> Result<Option<Value>, Error> {
+        if name != "harness_command" {
+            return Ok(None);
+        }
+        let catalog = self
+            .driver
+            .get()?
+            .read("harness_commands", args.clone())
+            .await?;
+        catalog["commands"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["name"] == args["command"])
+            .cloned()
+            .map(Some)
+            .ok_or_else(Error::unsupported)
     }
 }
 
-fn receipt(id: &str, result: Result<Value, Error>) -> Value {
+async fn reconcile_receipt(
+    receipts: &ReceiptScope,
+    id: &str,
+    drivers: Vec<Arc<dyn super::driver::HarnessDriver>>,
+) -> Result<Value, Error> {
+    let mut receipt = receipts.operation(id).await?;
+    for driver in drivers {
+        if receipt["outcome"] == "unknown" {
+            if let Some(result) = driver.reconcile_operation(id).await? {
+                receipt = persist_reconciliation(receipts, id, result).await?;
+            }
+        }
+        driver.operation_settled(id, &receipt);
+    }
+    Ok(receipt)
+}
+
+async fn persist_reconciliation(
+    receipts: &ReceiptScope,
+    id: &str,
+    native: Value,
+) -> Result<Value, Error> {
+    let started = std::time::Instant::now();
+    let result = receipts
+        .finish(
+            id,
+            json!({"outcome":"committed","requestId":id,"result":native}),
+        )
+        .await;
+    let confirmed = result
+        .as_ref()
+        .is_ok_and(|receipt| receipt["outcome"] == "committed");
+    crate::core::events::emit(
+        if confirmed {
+            crate::core::events::Level::Info
+        } else {
+            crate::core::events::Level::Warn
+        },
+        "harness.operation.reconcile",
+        json!({"operation":"harness.operation.reconcile","operationId":id,"stage":"receipt_persistence",
+            "outcome":if confirmed {"confirmed"} else {"unconfirmed"},"durationMs":started.elapsed().as_millis(),
+            "code":result.as_ref().err().map(|error| error.code)}),
+    );
+    result
+}
+
+fn checkpoint_diagnostic(
+    id: &str,
+    args: &Value,
+    result: &Result<Value, Error>,
+    elapsed: std::time::Duration,
+) {
+    let verified = result
+        .as_ref()
+        .is_ok_and(|value| value["checkpoint"]["verified"] == true);
+    let code = match result {
+        Err(error) => Some(error.code),
+        Ok(value) => value["checkpoint"]["code"].as_str().filter(|code| {
+            code.len() <= 80
+                && code
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        }),
+    };
+    let session = args["sessionId"]
+        .as_str()
+        .filter(|id| crate::core::ids::is_identifier_within(id, 256));
+    crate::core::events::emit(
+        if verified {
+            crate::core::events::Level::Info
+        } else {
+            crate::core::events::Level::Warn
+        },
+        "harness.fork.result",
+        json!({"operation":"harness.fork","operationId":id,"sessionId":session,
+            "stage":"checkpoint","outcome":if verified {"verified"} else if result.is_err() {"rejected"} else {"unconfirmed"},
+            "code":code,"durationMs":elapsed.as_millis()}),
+    );
+}
+
+fn report_command_result(
+    name: &str,
+    id: &str,
+    args: &Value,
+    result: &Result<Value, Error>,
+    dispatched: bool,
+    started: std::time::Instant,
+) {
+    if name != "harness_command" {
+        return;
+    }
+    let failed = result
+        .as_ref()
+        .map(|value| value["failed"] == true)
+        .unwrap_or(true);
+    crate::core::events::emit(
+        if failed {
+            crate::core::events::Level::Warn
+        } else {
+            crate::core::events::Level::Info
+        },
+        "harness.command.result",
+        json!({"operation":"harness.command","operationId":id,"sessionId":args["sessionId"],
+            "stage":if dispatched {"native"} else {"prepare"},"outcome":if failed {"failed"} else {"accepted"},
+            "code":result.as_ref().err().map(|error|error.code),"durationMs":started.elapsed().as_millis()}),
+    );
+}
+
+fn report_preparation_failure(
+    id: &str,
+    name: &str,
+    result: &Result<Value, Error>,
+    started: std::time::Instant,
+) {
+    if let Err(error) = result {
+        crate::core::events::emit(
+            crate::core::events::Level::Warn,
+            "harness.operation.preparation_failed",
+            json!({"operation":name,"operationId":id,"stage":"prepare","outcome":"not-committed",
+                "code":error.code,"executionStarted":false,"durationMs":started.elapsed().as_millis()}),
+        );
+    }
+}
+
+fn receipt(id: &str, result: Result<Value, Error>, dispatched: bool) -> Value {
     match result {
         Ok(result) => json!({"outcome":"committed","requestId":id,"result":result}),
+        // Read-only discovery and admission can fail with the same transport code
+        // as a lost write response. Only a dispatched execution can be unknown.
+        Err(error) if !dispatched => json!({"outcome":"not-committed","requestId":id,
+            "code":error.code,"stage":"prepare","executionStarted":false}),
         Err(error) => {
             json!({"outcome":if error.code == "ETIMEDOUT" || error.code == "EIO" {"unknown"} else {"not-committed"},
                 "requestId":id,"code":error.code})
@@ -459,8 +758,41 @@ fn receipt(id: &str, result: Result<Value, Error>) -> Value {
 fn fingerprint(name: &str, args: &Value) -> String {
     format!(
         "{:x}",
-        Sha256::digest(json!([name, args]).to_string().as_bytes())
+        Sha256::digest(
+            json!([name, execution_args(name, args)])
+                .to_string()
+                .as_bytes()
+        )
     )
+}
+fn execution_args(name: &str, args: &Value) -> Value {
+    let mut value = args.clone();
+    if name == "harness_command" {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("outputMode");
+        }
+    }
+    value
+}
+fn output_mode(name: &str, args: &Value) -> Result<bool, Error> {
+    let started = std::time::Instant::now();
+    let result = if matches!(name, "harness_command" | "harness_operation") {
+        super::command_outputs::reference_requested(args)
+    } else {
+        Ok(false)
+    };
+    if let Err(error) = result {
+        let id = args["requestId"]
+            .as_str()
+            .filter(|id| crate::core::ids::is_identifier_within(id, 128));
+        crate::core::events::emit(
+            crate::core::events::Level::Warn,
+            "harness.command.output_mode",
+            json!({"operation":"harness.command.output_mode","operationId":id,"stage":"request-validation",
+                "outcome":"failure","code":error.code,"durationMs":started.elapsed().as_millis()}),
+        );
+    }
+    result
 }
 
 pub(super) fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
@@ -493,6 +825,28 @@ mod tests {
     use crate::harness::driver::HarnessDriver;
     use futures_util::future::BoxFuture;
     use tokio::sync::Notify;
+
+    #[test]
+    fn output_mode_changes_only_command_presentation_not_other_mutation_identities() {
+        let original = json!({"requestId":"same","sessionId":"native","command":"compact"});
+        let mut referenced = original.clone();
+        referenced["outputMode"] = json!("reference");
+        assert_eq!(
+            fingerprint("harness_command", &original),
+            fingerprint("harness_command", &referenced)
+        );
+        assert_ne!(
+            fingerprint("harness_turn", &original),
+            fingerprint("harness_turn", &referenced)
+        );
+        assert_eq!(execution_args("harness_command", &referenced), original);
+        for mode in [Value::Null, json!("raw"), json!("invalid"), json!(false)] {
+            let mut invalid = original.clone();
+            invalid["outputMode"] = mode;
+            assert!(output_mode("harness_command", &invalid).is_err());
+            assert!(output_mode("harness_operation", &invalid).is_err());
+        }
+    }
 
     struct SlowDrain {
         entered: Arc<Notify>,

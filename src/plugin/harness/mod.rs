@@ -7,6 +7,8 @@ mod claude;
 mod codex;
 #[path = "drivers/codex/delete.rs"]
 mod codex_delete;
+mod command_outputs;
+mod command_runs;
 mod commands;
 pub mod config;
 mod diagnostics;
@@ -25,7 +27,7 @@ mod search;
 mod service;
 mod subscription;
 mod usage;
-pub use driver::HarnessDriver;
+pub use driver::{HarnessDriver, NativeExecution};
 pub use plugins::{HarnessPlugin, HarnessPlugins};
 pub use service::Harnesses;
 mod mutation_queue;

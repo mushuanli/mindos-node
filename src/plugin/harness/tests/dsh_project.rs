@@ -54,6 +54,28 @@ async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
         .unwrap();
     assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(listed["sessions"][0]["id"], "existing");
+    let mut query_args = args.clone();
+    query_args.as_object_mut().unwrap().remove("epoch");
+    query_args["sessionId"] = json!("existing");
+    query_args["command"] = json!("session:status");
+    query_args["requestId"] = json!("readonly-query");
+    query_args["readOnly"] = json!(true);
+    let observed = state
+        .services
+        .require::<mindos_node::harness::Harnesses>()
+        .unwrap()
+        .project_call(&state, who, "harness_query", query_args.clone())
+        .await
+        .unwrap();
+    assert_eq!(observed["status"], "completed");
+    query_args["command"] = json!("compact");
+    assert!(state
+        .services
+        .require::<mindos_node::harness::Harnesses>()
+        .unwrap()
+        .project_call(&state, who, "harness_query", query_args)
+        .await
+        .is_err());
     let created = state
         .services
         .require::<mindos_node::harness::Harnesses>()
@@ -101,6 +123,66 @@ async fn managed_dsh_uses_the_project_launcher_and_readonly_mounts() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+    let harness = state
+        .services
+        .require::<mindos_node::harness::Harnesses>()
+        .unwrap();
+    host.state.errors.lock().unwrap().insert(
+        "session/prompt".into(),
+        json!({"code":"gateway/internal","message":"private"}),
+    );
+    let proof_id = id.to_owned();
+    args["requestId"] = json!("project-proof");
+    args["prompt"] = json!("identified project input");
+    assert_eq!(
+        harness
+            .project_call(&state, who, "harness_turn", args.clone())
+            .await
+            .unwrap()["outcome"],
+        "unknown"
+    );
+    host.emit(
+        &proof_id,
+        json!({"type":"event","event":{"seq":2,"type":"turn/start","data":{"turn":2}}}),
+    );
+    host.emit(&proof_id, json!({"type":"event","event":{"seq":3,"type":"user/message","data":{"turn":2,"source":{"kind":"user","rpcId":"project-proof"},"content":[{"type":"text","text":"identified project input"}]}}}));
+    host.emit(&proof_id, json!({"type":"event","event":{"seq":4,"type":"turn/end","data":{"turn":2,"reason":{"kind":"completed"}}}}));
+    for _ in 0..100 {
+        let page = harness
+            .subscribe(&state, who, args.clone())
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+        if page["events"].as_array().unwrap().iter().any(|row| {
+            row["message"]["method"] == "turn/completed"
+                && row["message"]["params"]["turn"]["id"] == "project-proof"
+        }) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    // Receipt identity spans observation modes; querying must not initialize another driver.
+    args["readOnly"] = json!(true);
+    assert_eq!(
+        harness
+            .project_call(&state, who, "harness_operation", args.clone())
+            .await
+            .unwrap()["outcome"],
+        "committed"
+    );
+    assert_eq!(
+        host.state
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|row| row["method"] == "session/create")
+            .count(),
+        1
+    );
     assert!(!root.path().join("docs/forbidden-write").exists());
     assert!(!root.path().join("docs/native-forbidden-write").exists());
     let bob = state.auth.index("bob").unwrap();

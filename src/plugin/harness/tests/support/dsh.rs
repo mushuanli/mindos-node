@@ -28,6 +28,10 @@ pub struct Data {
     pub calls: Mutex<Vec<Value>>,
     pub bus: broadcast::Sender<(String, Value)>,
     pub errors: Mutex<BTreeMap<String, Value>>,
+    pub errors_after: Mutex<BTreeMap<String, usize>>,
+    pub delays: Mutex<BTreeMap<String, u64>>,
+    pub command_result: Mutex<Option<Value>>,
+    pub identify_prompts: std::sync::atomic::AtomicBool,
     workspaces: Mutex<BTreeMap<String, String>>,
 }
 impl Drop for Host {
@@ -40,6 +44,10 @@ impl Host {
         let state = Arc::new(Data {
             rows: Mutex::default(),
             errors: Mutex::default(),
+            errors_after: Mutex::default(),
+            delays: Mutex::default(),
+            command_result: Mutex::default(),
+            identify_prompts: std::sync::atomic::AtomicBool::new(true),
             records: Mutex::default(),
             calls: Mutex::default(),
             bus: broadcast::channel(1024).0,
@@ -74,14 +82,48 @@ impl Host {
         Self { url, state, task }
     }
     pub fn emit(&self, session: &str, frame: Value) {
+        let turn = (frame["event"]["type"] == "turn/start")
+            .then(|| frame["event"]["data"]["turn"].clone());
+        self.emit_frame(session, frame);
+        if let Some(turn) = turn {
+            if self
+                .state
+                .identify_prompts
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                self.identify_prompt(session, turn);
+            }
+        }
+    }
+    fn identify_prompt(&self, session: &str, turn: Value) {
+        let request = self
+            .state
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|row| {
+                row["method"] == "session/prompt"
+                    && row["payload"]["args"]["request"]["sessionId"] == session
+            })
+            .map(|row| row["payload"]["args"]["request"].clone());
+        if let Some(request) = request {
+            self.emit_frame(session, json!({"type":"event","event":{"type":"user/message","data":{
+                "turn":turn,"source":{"kind":"user","rpcId":request["requestId"]},"content":request["content"]}}}));
+        }
+    }
+    fn emit_frame(&self, session: &str, mut frame: Value) {
         if frame["type"] == "event" {
-            self.state
-                .records
-                .lock()
-                .unwrap()
-                .entry(session.into())
-                .or_default()
-                .push(frame.clone());
+            let mut records = self.state.records.lock().unwrap();
+            let rows = records.entry(session.into()).or_default();
+            let next = rows
+                .last()
+                .and_then(|row| row["event"]["seq"].as_i64())
+                .unwrap_or(-1)
+                + 1;
+            frame["event"]["seq"] = json!(next);
+            rows.push(frame.clone());
         }
         let _ = self.state.bus.send((session.into(), frame));
     }
@@ -162,7 +204,37 @@ async fn rpc(
     let endpoint = format!("{namespace}/{method}");
     let args = &body["payload"]["args"];
     state.calls.lock().unwrap().push(body.clone());
-    if let Some(error) = state.errors.lock().unwrap().get(&endpoint) {
+    let delay = state
+        .delays
+        .lock()
+        .unwrap()
+        .get(&endpoint)
+        .copied()
+        .unwrap_or(0);
+    if delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
+    let count = state
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|row| row["method"] == endpoint)
+        .count();
+    let skip = state
+        .errors_after
+        .lock()
+        .unwrap()
+        .get(&endpoint)
+        .copied()
+        .unwrap_or(0);
+    if let Some(error) = state
+        .errors
+        .lock()
+        .unwrap()
+        .get(&endpoint)
+        .filter(|_| count > skip)
+    {
         return Json(json!({"type":"server-response","rpcId":body["rpcId"],"result":{"ok":false,"error":error}})).into_response();
     }
     let value = match endpoint.as_str() {
@@ -176,7 +248,7 @@ async fn rpc(
                 .unwrap()
                 .contains_key(args["agentId"].as_str().unwrap()));
             assert_eq!(args["submittedAttachments"], json!([]));
-            json!({"commandId":"native-command","result":{"kind":"success","text":"Context compacted"}})
+            state.command_result.lock().unwrap().clone().unwrap_or_else(|| json!({"commandId":"native-command","result":{"kind":"success","text":"Context compacted"}}))
         }
         "session/list" => {
             json!({"items":state.rows.lock().unwrap().values().cloned().collect::<Vec<_>>()})
@@ -203,6 +275,14 @@ async fn rpc(
         }
         "session/selectModel" => json!({"selected":args["request"]}),
         "session/prompt" => {
+            if args["request"]["content"][0]["text"] == "late-reject-admission" {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                return Json(
+                    json!({"type":"server-response","rpcId":body["rpcId"],"result":{"ok":false,
+                    "error":{"code":"session/agent-busy","message":"late fixture rejection"}}}),
+                )
+                .into_response();
+            }
             if args["request"]["content"][0]["text"] == "slow-admission" {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }

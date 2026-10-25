@@ -20,6 +20,7 @@ pub fn consume(context: &mut Context, frame: Value) -> Result<(), Error> {
                 json!({"threadId":context.id,"commands":commands}),
             )
         }
+        Some("system") => super::system::consume(context, &frame),
         Some("user") if frame["parent_tool_use_id"].is_null() => acknowledge(context, &frame),
         Some("assistant") if frame["parent_tool_use_id"].is_null() => assistant(context, &frame),
         Some("result") => complete(context, &frame),
@@ -53,7 +54,7 @@ fn current_model(context: &Context, frame: &Value) {
         catalog["current"] = current;
     }
 }
-fn push(context: &Context, method: &str, params: Value) -> Result<(), Error> {
+pub(super) fn push(context: &Context, method: &str, params: Value) -> Result<(), Error> {
     context
         .events
         .lock()
@@ -161,6 +162,11 @@ pub fn item(block: &Value, id: &str, turn: &str) -> Option<Value> {
     super::super::presentation::item(&value)
 }
 fn complete(context: &mut Context, frame: &Value) -> Result<(), Error> {
+    if context.command && !context.command_output {
+        if let Some(output) = frame["result"].as_str().filter(|text| !text.is_empty()) {
+            super::system::note(context, "result", output)?;
+        }
+    }
     // Native control-like commands may finish without echoing a user frame.
     if let Some(reply) = context.pending.remove(&context.turn) {
         let _ = reply.send(Ok(json!({"turnId":context.turn})));
@@ -176,6 +182,7 @@ fn complete(context: &mut Context, frame: &Value) -> Result<(), Error> {
         "completed"
     };
     session["lastTurnResult"] = json!(result);
+    session["lastTurnId"] = json!(context.turn);
     session["updatedAt"] = json!(chrono::Utc::now().timestamp_millis());
     drop(session);
     let requests = context.requests.keys().cloned().collect::<Vec<_>>();
@@ -185,7 +192,7 @@ fn complete(context: &mut Context, frame: &Value) -> Result<(), Error> {
     push(
         context,
         "turn/completed",
-        json!({"threadId":context.id,"turn":{"id":context.turn,"status":result}}),
+        json!({"threadId":context.id,"turn":{"id":context.turn,"status":if result == "cancelled" {"interrupted"} else {result}}}),
     )
 }
 fn resolve(context: &mut Context, id: &Value) -> Result<(), Error> {

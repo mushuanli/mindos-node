@@ -10,7 +10,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
@@ -90,11 +90,35 @@ impl Client {
         Ok(client)
     }
     pub async fn call(&self, endpoint: &str, args: Value) -> Result<Value, Error> {
+        self.call_with_timeout(endpoint, args, self.timeout).await
+    }
+    pub async fn call_with_timeout(
+        &self,
+        endpoint: &str,
+        args: Value,
+        timeout: Duration,
+    ) -> Result<Value, Error> {
+        let started = Instant::now();
         let _permit = self
             .requests
             .try_acquire()
             .map_err(|_| Error::too_many("DSH_RPC_BUSY"))?;
         let rpc_id = id();
+        match self.post(endpoint, args, &rpc_id, timeout).await {
+            Ok(response) => finish_reply(response, endpoint, &rpc_id, started).await,
+            Err(error) => {
+                report_rpc_failure(endpoint, &rpc_id, 0, None, error, started);
+                Err(error)
+            }
+        }
+    }
+    async fn post(
+        &self,
+        endpoint: &str,
+        args: Value,
+        rpc_id: &str,
+        timeout: Duration,
+    ) -> Result<reqwest::Response, Error> {
         let url = self
             .base
             .join(&format!("api/{endpoint}"))
@@ -102,22 +126,14 @@ impl Client {
         let request = self
             .http
             .post(url)
+            .timeout(timeout)
             .json(&json!({"type":"client-request",
             "rpcId":rpc_id,"method":endpoint,"payload":{"args":args}}))
             .send();
-        let response = tokio::select! {
-            _ = self.stop.cancelled() => return Err(Error::unavailable()),
-            response = request => response.map_err(network_error)?,
-        };
-        if !response.status().is_success() {
-            return Err(status_error(response.status().as_u16()));
+        tokio::select! {
+            _ = self.stop.cancelled() => Err(Error::unavailable()),
+            response = request => response.map_err(network_error),
         }
-        decode_reply(
-            bounded_json(response)
-                .await
-                .map_err(|_| Error::unavailable())?,
-            &rpc_id,
-        )
     }
 
     pub fn subscribe(&self, endpoint: &str, args: Value) -> Result<Subscription, Error> {
@@ -149,6 +165,27 @@ impl Client {
             .await
             .map_err(|_| Error::timed_out())?
     }
+}
+async fn finish_reply(
+    response: reqwest::Response,
+    endpoint: &str,
+    rpc_id: &str,
+    started: Instant,
+) -> Result<Value, Error> {
+    let status = response.status().as_u16();
+    let body = bounded_json(response).await;
+    let result = match &body {
+        Ok(body) => decode_http_reply(status, body, rpc_id),
+        Err(_) => Err(if (200..300).contains(&status) {
+            Error::unavailable()
+        } else {
+            status_error(status)
+        }),
+    };
+    if let Err(error) = result {
+        report_rpc_failure(endpoint, rpc_id, status, body.as_ref().ok(), error, started);
+    }
+    result
 }
 async fn bounded_json(response: reqwest::Response) -> Result<Value, Error> {
     if response
@@ -265,30 +302,19 @@ fn status_error(status: u16) -> Error {
         401 => Error::unauthenticated(),
         403 => Error::forbidden("EACCES"),
         404 => Error::not_found("ENOENT"),
-        409 => Error::busy(),
+        409 => Error::conflict("DSH_RPC_CONFLICT"),
         429 => Error::too_many("DSH_BUSY"),
         _ => Error::unavailable(),
     }
 }
 fn remote_error(error: &Value) -> Error {
-    let code = error["code"]
-        .as_str()
-        .filter(|text| {
-            text.len() <= 128
-                && text
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"/_-".contains(&b))
-        })
-        .unwrap_or("unknown");
-    crate::core::events::emit(
-        crate::core::events::Level::Warn,
-        "harness.dsh.rpc_failed",
-        json!({"code":code}),
-    );
     match error["code"].as_str().unwrap_or("") {
         "gateway/method-unavailable" => Error::unsupported(),
         "session/not-found" | "workspace/not-found" => Error::not_found("ENOENT"),
-        "session/busy" | "session/writer-held" | "workspace/session-active" => Error::busy(),
+        "session/busy" => Error::conflict("DSH_SESSION_BUSY"),
+        "session/agent-busy" => Error::conflict("DSH_AGENT_BUSY"),
+        "session/writer-held" => Error::conflict("DSH_SESSION_WRITER_HELD"),
+        "workspace/session-active" => Error::conflict("DSH_WORKSPACE_SESSION_ACTIVE"),
         "gateway/bad-request" | "session/title-invalid" => Error::invalid(),
         _ => Error::unavailable(),
     }
@@ -349,7 +375,45 @@ async fn websocket(
     })
 }
 
-fn decode_reply(body: Value, rpc_id: &str) -> Result<Value, Error> {
+fn decode_http_reply(status: u16, body: &Value, rpc_id: &str) -> Result<Value, Error> {
+    if !(200..300).contains(&status) {
+        if status == 409
+            && body["type"] == "server-response"
+            && body["rpcId"] == rpc_id
+            && body["result"]["ok"] == false
+        {
+            return Err(remote_error(&body["result"]["error"]));
+        }
+        return Err(status_error(status));
+    }
+    decode_reply(body, rpc_id)
+}
+fn report_rpc_failure(
+    endpoint: &str,
+    rpc_id: &str,
+    status: u16,
+    body: Option<&Value>,
+    error: Error,
+    started: Instant,
+) {
+    let native_code = body
+        .filter(|value| value["rpcId"] == rpc_id)
+        .and_then(|value| value["result"]["error"]["code"].as_str())
+        .filter(|value| {
+            value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"/_-".contains(&b))
+        });
+    crate::core::events::emit(
+        crate::core::events::Level::Warn,
+        "harness.dsh.rpc_failed",
+        json!({"operation":"harness.dsh.rpc","operationId":rpc_id,"stage":endpoint,"outcome":"failure",
+        "code":error.code,"nativeCode":native_code,"httpStatus":status,"durationMs":started.elapsed().as_millis()}),
+    );
+}
+
+fn decode_reply(body: &Value, rpc_id: &str) -> Result<Value, Error> {
     if body["type"] != "server-response" || body["rpcId"] != rpc_id {
         return Err(Error::unavailable());
     }
@@ -402,4 +466,47 @@ fn websocket_request(
         request.headers_mut().insert("cookie", cookie);
     }
     Ok(request)
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+    #[test]
+    fn preserves_native_conflict_categories_without_accepting_failed_http_successes() {
+        for (native, expected) in [
+            ("session/busy", "DSH_SESSION_BUSY"),
+            ("session/writer-held", "DSH_SESSION_WRITER_HELD"),
+            ("session/agent-busy", "DSH_AGENT_BUSY"),
+            ("workspace/session-active", "DSH_WORKSPACE_SESSION_ACTIVE"),
+        ] {
+            let body = json!({"type":"server-response","rpcId":"r","result":{"ok":false,"error":{"code":native,"message":"private error text"}}});
+            for status in [200, 409] {
+                assert_eq!(
+                    decode_http_reply(status, &body, "r").err().unwrap().code,
+                    expected
+                );
+            }
+            assert_eq!(
+                decode_http_reply(401, &body, "r").err().unwrap().code,
+                "EACCES"
+            );
+            assert_eq!(
+                decode_http_reply(403, &body, "r").err().unwrap().code,
+                "EACCES"
+            );
+        }
+        let success = json!({"type":"server-response","rpcId":"r","result":{"ok":true,"value":{}}});
+        assert_eq!(
+            decode_http_reply(409, &success, "r").err().unwrap().code,
+            "DSH_RPC_CONFLICT"
+        );
+        assert_eq!(
+            decode_http_reply(200, &success, "another")
+                .err()
+                .unwrap()
+                .code,
+            "EIO"
+        );
+        assert_eq!(decode_http_reply(200, &success, "r").unwrap(), json!({}));
+    }
 }

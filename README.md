@@ -196,7 +196,39 @@ retained_files = 5
 
 支持会话列表、历史分页、新建、继续、流式文本/推理、工具摘要、审批/问题回复、中断、重命名及归档。所有变更复用通用 epoch/requestId 回执；原生新建也携带确定性的会话 ID。HTTP 只等提交回执，模型执行由后台流推进；不同会话不共享模型等待锁。默认最多 64 个附着会话、128 个在途 HTTP 请求；WS 队列和重放缓冲有界。网络超时或无法确认的原生错误保持 unknown，不自动重发 prompt。
 
+普通输入的回执为 unknown 时，`harness_operation` 可向仍存活的原驱动读取接纳证据：原生 `user/message` 必须有匹配的 `source.kind=user`、`source.rpcId`、turn 编号与冻结文字摘要。身份或输入不一致不会确认，输入冲突返回 `DSH_PROMPT_EVIDENCE_MISMATCH`。证据先写回同一 epoch 回执库，再解除接纳占用；迟到超时/拒绝不能覆盖已确认回执或清理正在运行的新旧轮次。查询不会初始化新驱动、resume 或重新发送输入；项目模式按相同主体/项目/profile 回执作用域查找既有实例，兼容观察模式变化。
+
+拥有明确原生消息身份后才绑定本次 turn；外部 turn 的内容使用其原生身份，不提前完成本次调用。尚未识别输入时取消返回 `DSH_TURN_NOT_IDENTIFIED`，不会发送宽泛的会话级 cancel。取消回执未核对时保留独立控制占用，后续写入返回 `DSH_CONTROL_RESULT_PENDING`；成功取消提交与真实终态分开，原生正常完成不会被请求意图改写为 cancelled。原生服务的外部写入和条件取消仍受其能力限制，本地校验不提供远端 CAS。
+
+容量不足时，仅回收已经观察到终态、没有借用中的控制操作、待审批、活动 turn 或未核对命令的观察订阅。先等待订阅任务退出，确认后才释放槽位；无可回收对象返回 `DSH_SESSION_LIMIT`，退出未确认返回 `DSH_SESSION_CLEANUP_PENDING` 并继续计入容量。新建后尚未执行的会话保留槽位，避免创建与首次发送之间被回收。回收不调用原生 cancel/archive，不删除历史、操作回执或上下文身份，也不代表 DSH 原生会话或工作区已被销毁。
+
+回收后目录返回 `owned=false`，新一轮需要恢复同一个 sessionId。客户端的队列派发准备会先 inspect，再按需 resume；读取历史不会自动恢复所有权。命令结果未知时返回 `DSH_COMMAND_RESULT_PENDING` 拒绝新的写入，状态查询仍可用；不能因界面已显示 idle 就清掉未知操作。容量日志包含操作身份、阶段、耗时、活动轮次/未确认命令/待交互数量，不记录输入或原生错误正文。DSH 的实时 requestId 与原生历史 turn 编号的完整持久映射仍需补齐，本次回收不提供跨事件缺口的完整恢复保证。
+
 暂不声明 fork、永久删除、取消归档、附件或用量计价能力；这些操作由能力描述隐藏。断线后该驱动实例拒绝继续写入，重启 mindos-node 后可显式继续原生持久会话；不会自动重放未知操作。托管实例退出时回收其进程组，活动结果不明时按共同文件门闩机制拒绝继续访问。日志复用 mindos-node JSONL，记录生命周期与安全的 DSH 错误代码，不输出 URL 令牌、cookie、prompt 或原生错误正文。
+
+命令目录与模型目录的读取失败不代表原生执行结果未知。Harness 服务在调用执行端口前保留明确的未派发依据；DSH 的新 `HarnessDriver.execute_checked` 还区分适配器内部预检与实际修改请求。能够证明未派发时，沿原回执保存 `outcome=not-committed`、原安全错误码、`stage=prepare` 和 `executionStarted=false`；队列保留失败条目，显式重试才分配新 attemptId。旧插件的默认实现保守视为已派发，不根据错误码推测未发送。模型目录读取在取得 prompt 占用之前完成；`selectModel` 或 `commands/execute` 一旦可能已发出，EIO/超时仍保持 unknown 和原占用，不能以“没有 prompt”推断修改未发生。回执持久化失败仍返回 unknown，不能用未派发内存事实绕过原回执核对。
+
+DSH 串行命令使用独立的 `harnesses.dsh.command_timeout_ms`，默认 600000 ms，可配置范围 100–1800000 ms；普通查询继续使用 `request_timeout_ms`，默认 25000 ms。外层服务在 25 秒内未完成时仍可返回 unknown，但不会取消已派发的原命令工作者。原生 HTTP 响应须匹配原 rpcId；迟到的正常响应继续保存到原 epoch/requestId 回执，不重发命令。原生等待本身超时、连接断开或响应身份不符仍保持 unknown。
+
+命令占用携带原 operationId，并保留已取得的完整规范化响应直到共享回执持久确认。回执写入失败时，`harness_operation` 可从同一存活驱动读取原响应，写回既有回执库，再解除占用及项目运行所有权。unknown、错误 requestId、不同原生结果以及迟到的旧回执均不能解除当前占用；成功响应不能被 not-committed 回执覆盖。独立状态查询不等待长命令；后续修改继续被 `DSH_COMMAND_RESULT_PENDING` 阻止。
+
+服务的既有修改串行锁覆盖原生派发、回执持久化及驱动收尾确认；排在仍执行的原命令后的修改先等待该锁，不能在原结果保存之前取得执行权。原工作者已退出但其回执仍未知时，DSH 原操作占用继续拒绝冲突修改；查询和精确回应／取消仍走各自原有独立通道。
+
+DSH 0.2.0-rc.2 的 `command/run.source` 只有 `kind=user`，原生 `commandId` 由其执行器生成，未携带调用方 requestId；真正丢失原生执行回复后，仍不能按名称、参数或相近时间猜测关联。上述原 HTTP 响应保留不提供跨原生断线、节点 epoch 或历史事件缺口的完整身份恢复，观察订阅回收也不解决该限制。
+
+### 原生命令的大输出
+
+`harness_profiles` 的 `capabilities.commandOutputs=true` 由公共服务声明，不要求每个原生驱动实现产物读取。客户端在每次 `harness_command` 或 `harness_operation` 请求显式传 `outputMode="reference"` 才启用引用投影：命令输出超过 64 KiB UTF-8 时，公开回执返回不超过该上限、按字符边界截取的 `result.output` 预览，并附 `result.outputRef={version:1,epoch,requestId,bytes,sha256,mimeType:"text/plain"}`。失败标志、commandId 和实际终态保持原值，小输出沿用原格式。
+
+省略 outputMode 保持完整原输出，兼容不识别 outputRef 的旧客户端；其他 outputMode 值明确拒绝。该字段仅影响对外展示，不发送给原生执行，也不计入 harness_command 的执行 fingerprint。同一 requestId 可在完整与引用模式之间核对或重试，不重放命令；其他修改操作的参数与摘要规则不变。两种模式都移除内部摘要元数据，旧客户端不会看到私有 `_commandOutput`。
+
+完整原文继续存入同一 ReceiptScope 的原 `result.output`；既有事务同时保存私有字节数和摘要元数据，公开回执不暴露该内部字段。驱动的 `operation_settled` 收到完整原结果，不能用预览代替，否则 DSH 的原生结果相等核对会失效。原回执不可被迟到工作者覆盖，产物读取失败也不修改执行回执。
+
+只读 `harness_command_output` 接收 `profileId/requestId/epoch/sha256/bytes/offset/limit`，项目作用域仍携带 `projectId/revision` 及可选 `readOnly`。`limit` 范围 1–65536 字节，返回 `{ref,offset,data,nextOffset}`，其中 data 是规范 base64，nextOffset 为下一字节位置或 null。字节块可能从 UTF-8 字符中间开始；客户端必须合并字节或使用流式解码，完整读取后核对总字节数和 SHA-256。offset 等于总长度时返回空块及 null。
+
+读取严格核对当前授权作用域、项目修订、epoch、原回执 ID、摘要、字节数及范围，不接受本地路径或临时 URL。它直接查找现有回执，不为缺失 ID 创建 not-committed fence，也不创建原生驱动、恢复会话、取得 writer 或授予控制权。原项目驱动已关闭时仍可在该 epoch 读取已保存结果；其他项目或 profile 不能复用同一个 requestId 获取正文。
+
+保留期仍是原节点 epoch 的私有临时 SQLite；重启后旧引用明确失效，不冒充永久历史或已导入宿主 Artifact。新记录在提交时计算一次摘要，分页仍会读取、解析原 receipt JSON；旧记录缺少摘要元数据时按实际正文计算。当前 DSH 原生传输的 8 MiB 响应上限仍有效，这不是无限大小或跨重启输出存储。
 
 0.3.1 的真实连接验收使用已发布 piagent-driver@0.2.0 → MCP → Rust DSH 驱动 → DSH 0.2.0-rc.2 → DeepSeek `deepseek-v4-flash`。验证新建、跨轮记忆、4 会话同时执行和流式增量隔离；SIGTERM 后托管 DSH 被回收，重启后继续原有会话仍保留上下文。共 10 个模型 turn 成功并持久记录 usage，测试会话全部归档。永久删除实际返回 ECAPABILITY 且保留会话，不计作删除成功。验收发现并修复用户绑定覆盖 CLI、新建 DTO 缺少 nullable updatedAt、SIGTERM 遗留原生写锁三个问题。
 
@@ -300,6 +332,10 @@ Codex、Claude Code、DSH 声明 capabilities.search 和 searchPrompts，`harnes
 
 
 ### 原生管理与内联附件
+
+Codex 的 `capabilities.checkpointFork` 表示支持经验证的 `harness_fork.lastTurnId`。节点先确认来源回合已终结，再使用 [app-server 检查点 fork](https://learn.chatgpt.com/docs/app-server) 并核对新 thread 的最后回合。成功回执包含 `checkpoint:{sourceSessionId,turnId,verified}`；如果原生端忽略边界或验证无法完成，仍保留已返回的 session 和 committed 回执，`verified:false` 与具体 code 阻止客户端选择该分支，不能伪装成没有创建。旧 `fork` 布尔值只表示原来的 latest 分支能力；其他适配器未声明 checkpointFork 时拒绝 lastTurnId，不按 kind 猜测能力。
+
+原生边界验收可运行 `python3 src/plugin/harness/tests/real_checkpoint_fork.py`（可用 CODEX_BINARY 指定二进制）。脚本使用临时 CODEX_HOME、空工作区与本地拒绝端点生成两个终结失败回合，实际验证指定第一个回合 fork 后只保留该前缀；不读取个人会话或使用真实模型服务。已验收 Codex CLI 0.164.0。此能力不代表原 thread 的条件追加，也不隔离工作区或项目记忆。
 
 Codex rollout 历史的用户项保留 `internal_chat_message_metadata_passthrough.content_item_kinds` 为 `contentItemKinds`，仅在类型和数量与 content 数组对齐时透传，并优先采用同一元数据的原生 turn_id。项目指令、环境和真实用户正文因此可由展示层区分；不按文本内容猜测来源、不删除或改写上下文、不改变发送行为。旧日志或没有此元数据的其他 harness 不补造来源。
 
@@ -420,16 +456,27 @@ CLI 分为三层：`cli/` 解析参数和显示结果；`admin/` 编排本地管
 
 ## Native harness slash commands
 
-`harness_profiles` advertises `capabilities.slashCommands`. `harness_commands` takes the selected `profileId` and optional `sessionId`, returning a bounded `commands` list with `name`, `description`, `argumentHint`, and `kind` (`prompt` or `action`). Catalog reads do not create a conversation or adopt native execution. Session-dependent catalogs appear after native initialization.
+`harness_profiles` advertises `capabilities.slashCommands`. `harness_commands` takes the selected `profileId` and optional `sessionId`, returning a bounded `commands` list with `name`, `description`, `argumentHint`, `kind` (`prompt` or `action`), optional definition `id`, `revision`, and `execution` (`query` or `serial`). Catalog reads do not create a conversation or adopt native execution. Session-dependent catalogs appear after native initialization. Old descriptors without `execution` remain serial.
 
 `harness_command` takes `profileId`, `sessionId`, `command`, optional string `arguments`, plus the existing `epoch` and `requestId`. Project calls retain `projectId` and `revision`. It uses the same authorization, mutation serialization and receipt lookup as other harness writes; unknown results must be reconciled, never replayed with a new request ID. Commands may return no turn, a `turnId`, or a native `commandId` with `output` and `failed`. A committed command with a failed handler remains a committed operation.
 
+Pass `expectedCommand: {id?, revision?}` to bind dispatch to the discovered definition. The node validates the current descriptor before admitting a query and again before execution; changed bindings fail with `HARNESS_COMMAND_CHANGED`. Legacy explicit queries accept no arguments or model override and retain mutation receipts. When `capabilities.commandQueries` is true, use the independent read-only port below instead. `/session:status` reports observed runtime state, exact turn identity when known, `scope` (`controlled` or `external`) and `loaded`; it never adopts an external session. `/status` is an alias only when the native catalog has no command with that name. External history cannot prove execution owned by another process is idle.
+
+Command results may carry `status: running|completed`. Asynchronous compact work emits `harness/command/updated` with command and exact turn identities; accepting the RPC does not finish the work. Serial instruction queues retain their own admission receipt even when later queries run, and wait for completion evidence before advancing. Lost events may be repaired from the exact native turn; an unknown receipt is never replayed.
+
 - Claude: discover the initialized SDK command list, including project/plugin commands and aliases. Cold sessions use a short-lived, nonpersistent SDK process in their verified working directory without adopting the session. Compact and its aliases are actions and may complete without a user-message echo; other prompt commands dispatch the exact slash input. Interactive-terminal-only commands are not synthesized.
-- Codex: expose `/compact` through `thread/compact/start` and `/review [instructions]` through inline `review/start`. Other terminal UI commands are not forwarded as ordinary prompts.
-- DSH: discover `commands/list` for the authorized agent and call `commands/execute`. Native command/run and command/done records retain their command identity in history.
+- Codex: use `codex app-server` with its default stdio transport. Expose `/compact` through asynchronous `thread/compact/start` and `/review [instructions]` through inline `review/start`. `/models`, `/mcp`, `/skills` query native APIs; discovered `/skill:<name>` commands use typed skill inputs. Duplicate skill names receive path-derived identities and disambiguated command names. Other terminal UI commands are not forwarded as ordinary prompts.
+- Claude: preserve compact boundaries, local command output and `session_state_changed` events enabled by `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`. `/session:models`, `/session:mcp`, `/session:context` query supported SDK controls; unavailable controls return a capability error instead of becoming prompts.
+- DSH: use `commands/list` only while an authorized observation is attached and pinned, then call `commands/execute` for serial commands. Native command discovery can resolve and resume an Agent: cold and archived sessions expose only adapter-owned queries, with `observation: {complete: false, code}`; native catalog conflicts retain those queries without claiming a writer. Native command/run and command/done records retain their command identity in history. `/session:models` queries the model catalog. Native descriptors lacking explicit query semantics remain serial; command names alone never grant concurrent execution.
 
 Adding another harness uses its driver-owned catalog and dispatch; the gateway and UI do not maintain a global list of command names.
 
+
+### Independent command queries
+
+Profiles with `capabilities.commandQueries: true` expose `harness_query`. Supply `profileId`, `sessionId`, an advertised query `command`, correlation `requestId`, optional `expectedCommand: {id?, revision?}`, and the usual project identity/revision. No execution epoch is required. This is a read operation: it does not allocate a mutation receipt, acquire a mutation queue, resume a session, or submit a prompt. Serial commands, meaningful arguments and model overrides are rejected by the adapter. The response is a completed command observation with `commandId` equal to the correlation ID and no `turnId`.
+
+Built-in state queries do not depend on full native command discovery. Clients must negotiate the capability before sending this request; older nodes retain their conservative command/receipt path. A host may save the resulting report in its existing recovery/history store and acknowledge that report independently of input submission. Query-report recovery must not call `harness_operation`; an absent durable report is not evidence about any native execution. Unknown reports never authorize replaying an execution command.
 
 ### Native models and reasoning
 

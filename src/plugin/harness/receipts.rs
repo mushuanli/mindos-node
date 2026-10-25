@@ -44,6 +44,9 @@ impl Receipts {
     }
 }
 impl ReceiptScope {
+    pub fn same_scope(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.store, &other.store) && self.key == other.key
+    }
     pub async fn existing(&self, id: &str, fingerprint: String) -> Result<Option<Value>, Error> {
         let id = identifier(id)?;
         self.access(move |db, scope, _| matching(db, scope, &id, &fingerprint))
@@ -92,9 +95,45 @@ impl ReceiptScope {
             Ok(receipt)
         }).await
     }
+    pub async fn output(&self, args: Value, epoch: String) -> Result<Value, Error> {
+        let started = std::time::Instant::now();
+        let id = args["requestId"]
+            .as_str()
+            .filter(|id| crate::core::ids::is_identifier_within(id, 128))
+            .map(str::to_owned);
+        let result = self.read_output(args, epoch).await;
+        crate::core::events::emit(
+            if result.is_ok() {
+                crate::core::events::Level::Info
+            } else {
+                crate::core::events::Level::Warn
+            },
+            "harness.command.output",
+            json!({"operation":"harness.command.output","operationId":id,"stage":"receipt-read",
+                "outcome":if result.is_ok() {"success"} else {"failure"},"code":result.as_ref().err().map(|error|error.code),
+                "durationMs":started.elapsed().as_millis()}),
+        );
+        result
+    }
+    async fn read_output(&self, args: Value, epoch: String) -> Result<Value, Error> {
+        let id = identifier(args["requestId"].as_str().ok_or_else(Error::invalid)?)?;
+        self.access(move |db, scope, _| {
+            let (_, receipt) =
+                lookup(db, scope, &id)?.ok_or_else(super::command_outputs::missing)?;
+            super::command_outputs::chunk(receipt, &args, &epoch)
+        })
+        .await
+    }
     pub async fn finish(&self, id: &str, receipt: Value) -> Result<Value, Error> {
         let id = identifier(id)?;
         self.access(move |db, scope, _| {
+            let (_, current) = lookup(db, scope, &id)?.ok_or_else(storage_error)?;
+            // Native reconciliation and the original worker may finish concurrently.
+            // A late timeout must not overwrite an already confirmed receipt.
+            if current["outcome"] != "unknown" {
+                return Ok(current);
+            }
+            let receipt = super::command_outputs::prepare(receipt);
             let changed = db
                 .execute(
                     "UPDATE receipts SET receipt=?3 WHERE scope=?1 AND id=?2",
@@ -228,6 +267,32 @@ mod tests {
             "not-committed"
         );
         assert_eq!(first.operation("id").await.unwrap()["outcome"], "unknown");
+    }
+    #[tokio::test]
+    async fn reconciled_receipts_survive_late_unknown_or_conflicting_worker_results() {
+        let store = Receipts::new().unwrap();
+        let scope = store.scoped("native-proof".into());
+        let _reservation = scope
+            .reserve("prompt", "frozen-input".into())
+            .await
+            .unwrap();
+        let committed =
+            json!({"outcome":"committed","requestId":"prompt","result":{"turnId":"prompt"}});
+        assert_eq!(
+            scope.finish("prompt", committed.clone()).await.unwrap(),
+            committed
+        );
+        for late in [
+            json!({"outcome":"unknown","requestId":"prompt"}),
+            json!({"outcome":"not-committed","requestId":"prompt"}),
+        ] {
+            assert_eq!(scope.finish("prompt", late).await.unwrap(), committed);
+        }
+        assert_eq!(scope.operation("prompt").await.unwrap(), committed);
+        let fenced = scope.operation("unseen").await.unwrap();
+        assert_eq!(scope.finish("unseen", committed).await.unwrap(), fenced);
+        assert!(scope.same_scope(&store.scoped("native-proof".into())));
+        assert!(!scope.same_scope(&store.scoped("different-owner".into())));
     }
     #[tokio::test]
     async fn full_receipt_database_keeps_the_admitted_operation_unknown() {

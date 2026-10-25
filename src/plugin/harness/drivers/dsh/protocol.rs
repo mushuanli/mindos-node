@@ -25,10 +25,23 @@ pub struct Cursor {
     pub seq: Option<u64>,
     pub turn: String,
     pub attempt: String,
-    pub interrupted: bool,
     pub native_turn: Option<u64>,
+    pub(super) observed_native: Option<u64>,
+    pub(super) expected_request: Option<String>,
+    pub(super) control_pending: Option<String>,
+    pub(super) admission: Option<super::admission::PromptAdmission>,
+    pub(super) command_pending: Option<super::command_admission::CommandAdmission>,
     pub(super) tools: std::collections::BTreeMap<String, Value>,
     pub(super) commands: std::collections::BTreeMap<String, String>,
+}
+impl Cursor {
+    pub(super) fn busy(&self) -> bool {
+        !self.turn.is_empty()
+            || self.admission.is_some()
+            || self.control_pending.is_some()
+            || self.command_pending.is_some()
+            || !self.commands.is_empty()
+    }
 }
 pub fn session(row: &Value, owned: bool, archived: bool) -> Value {
     let title = &row["projections"]["values"]["title"];
@@ -66,6 +79,25 @@ fn record_items(event: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value>
         return vec![];
     }
     cursor.seq = Some(seq);
+    if let Some(admission) = cursor.admission.as_mut() {
+        admission.observe(event, session);
+    }
+    if cursor.native_turn.is_none()
+        && surface_appends(&event["surfaceOp"])
+        && event["type"] == "user/message"
+        && event["data"]["source"]["kind"] == "user"
+        && cursor
+            .expected_request
+            .as_deref()
+            .is_some_and(|id| event["data"]["source"]["rpcId"] == id)
+        && !cursor
+            .admission
+            .as_ref()
+            .is_some_and(|value| value.mismatch)
+    {
+        cursor.native_turn = event["data"]["turn"].as_u64();
+        cursor.observed_native = cursor.native_turn;
+    }
     if matches!(event["type"].as_str(), Some("command/run" | "command/done")) {
         let data = &event["data"];
         let Some(id) = data["commandId"].as_str() else {
@@ -88,7 +120,10 @@ fn record_items(event: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value>
             "status":if running {"running"} else if data["kind"]=="error" {"failed"} else {"completed"}})];
     }
     if event["type"] == "turn/start" {
-        cursor.native_turn = event["data"]["turn"].as_u64();
+        cursor.observed_native = event["data"]["turn"].as_u64();
+        if cursor.expected_request.is_none() {
+            cursor.native_turn = cursor.observed_native;
+        }
         if cursor.turn.is_empty() {
             cursor.turn = format!("{session}-{}", event["data"]["turn"]);
         }
@@ -103,7 +138,23 @@ fn record_items(event: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value>
     if !surface_appends(&event["surfaceOp"]) {
         return vec![];
     }
-    content_items(event, cursor, role, seq)
+    let mut items = content_items(event, cursor, role, seq);
+    let turn = visible_turn(cursor, session);
+    for item in &mut items {
+        item["turnId"] = json!(turn);
+    }
+    items
+}
+fn visible_turn(cursor: &Cursor, session: &str) -> String {
+    if cursor.expected_request.is_some()
+        && (cursor.native_turn.is_none() || cursor.native_turn != cursor.observed_native)
+    {
+        return cursor
+            .observed_native
+            .map(|turn| format!("{session}-{turn}"))
+            .unwrap_or_default();
+    }
+    cursor.turn.clone()
 }
 fn content_items(event: &Value, cursor: &mut Cursor, role: &str, seq: u64) -> Vec<Value> {
     let data = &event["data"];
@@ -149,7 +200,7 @@ fn tool_result(value: &mut Value, block: &Value, cursor: &mut Cursor) {
         }
     }
 }
-fn surface_appends(op: &Value) -> bool {
+pub(super) fn surface_appends(op: &Value) -> bool {
     op.is_null() || op == "append" || op["op"] == "append"
 }
 fn item(block: &Value, id: &str, role: &str, turn: &str, time: &Value) -> Option<Value> {
@@ -197,9 +248,10 @@ fn event(frame: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value> {
     {
         return vec![];
     }
+    let was_unbound = cursor.native_turn.is_none();
     let mut messages = records(std::slice::from_ref(frame), cursor, session).into_iter()
-        .map(|item| json!({"method":"item/completed","params":{"threadId":session,"turnId":cursor.turn,"item":item}})).collect::<Vec<_>>();
-    if event["type"] == "turn/start" {
+        .map(|item| json!({"method":"item/completed","params":{"threadId":session,"turnId":item["turnId"],"item":item}})).collect::<Vec<_>>();
+    if was_unbound && cursor.native_turn.is_some() {
         messages.push(json!({"method":"turn/started","params":{"threadId":session,"turn":{"id":cursor.turn,"status":"inProgress"}}}));
     }
     if event["type"] == "turn/end"
@@ -207,15 +259,16 @@ fn event(frame: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value> {
         && cursor.native_turn == event["data"]["turn"].as_u64()
         && cursor.native_turn.is_some()
     {
-        let result = terminal_result(cursor.interrupted, &event["data"]["reason"]);
+        let result = terminal_result(&event["data"]["reason"]);
         messages.push(json!({"method":"turn/completed","params":{"threadId":session,"turn":{"id":cursor.turn,"status":result}}}));
         cursor.turn.clear();
-        cursor.interrupted = false;
         cursor.native_turn = None;
+        cursor.expected_request = None;
     }
     messages
 }
 fn assistant(frame: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value> {
+    let turn = visible_turn(cursor, session);
     if frame["type"] == "start" {
         cursor.attempt = frame["attemptId"].as_str().unwrap_or("").into();
     }
@@ -230,9 +283,9 @@ fn assistant(frame: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value> {
     );
     match chunk["type"].as_str() {
         Some("text-delta") => vec![json!({"method":"item/agentMessage/delta","params":{
-            "threadId":session,"turnId":cursor.turn,"itemId":id,"delta":chunk["text"]}})],
+            "threadId":session,"turnId":turn,"itemId":id,"delta":chunk["text"]}})],
         Some("reasoning-delta") => vec![json!({"method":"item/reasoning/textDelta","params":{
-            "threadId":session,"turnId":cursor.turn,"itemId":id,"delta":chunk["text"]}})],
+            "threadId":session,"turnId":turn,"itemId":id,"delta":chunk["text"]}})],
         _ => vec![],
     }
 }
@@ -267,10 +320,7 @@ pub fn turns(items: Vec<Value>) -> Vec<Value> {
     turns
 }
 
-fn terminal_result(interrupted: bool, reason: &Value) -> &'static str {
-    if interrupted {
-        return "interrupted";
-    }
+fn terminal_result(reason: &Value) -> &'static str {
     match reason["kind"].as_str() {
         Some("completed") => "completed",
         Some("cancelled" | "interrupted" | "aborted") => "interrupted",
@@ -398,5 +448,88 @@ mod tests {
         assert_eq!(items[0]["type"], "dynamicToolCall");
         let summary = crate::harness::presentation::item(&items[0]).unwrap();
         assert_eq!(summary["paths"], json!(["src/main.rs"]));
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    fn event(cursor: &mut Cursor, seq: u64, kind: &str, data: Value) -> Vec<Value> {
+        frame(
+            &json!({"type":"event","event":{"seq":seq,"type":kind,"data":data}}),
+            cursor,
+            "s",
+        )
+    }
+    #[test]
+    fn an_identified_turn_cannot_be_rebound_by_a_later_user_message() {
+        let mut cursor = Cursor {
+            turn: "owned".into(),
+            expected_request: Some("owned".into()),
+            ..Default::default()
+        };
+        event(&mut cursor, 0, "turn/start", json!({"turn":1}));
+        event(
+            &mut cursor,
+            1,
+            "user/message",
+            json!({"turn":1,"source":{"kind":"user","rpcId":"owned"},"content":[{"type":"text","text":"input"}]}),
+        );
+        assert_eq!(cursor.native_turn, Some(1));
+        event(
+            &mut cursor,
+            2,
+            "user/message",
+            json!({"turn":2,"source":{"kind":"user","rpcId":"owned"},"content":[{"type":"text","text":"input"}]}),
+        );
+        assert_eq!(cursor.native_turn, Some(1));
+    }
+    #[test]
+    fn only_the_identified_prompt_turn_can_complete_the_owned_operation() {
+        let mut cursor = Cursor {
+            turn: "owned".into(),
+            expected_request: Some("owned".into()),
+            ..Default::default()
+        };
+        assert!(event(&mut cursor, 0, "turn/start", json!({"turn":1})).is_empty());
+        let foreign = event(
+            &mut cursor,
+            1,
+            "user/message",
+            json!({"turn":1,"source":{"kind":"user","rpcId":"foreign"},"content":[{"type":"text","text":"foreign input"}]}),
+        );
+        assert_eq!(foreign[0]["params"]["turnId"], "s-1");
+        assert!(event(
+            &mut cursor,
+            2,
+            "turn/end",
+            json!({"turn":1,"reason":{"kind":"completed"}})
+        )
+        .is_empty());
+        assert_eq!(cursor.turn, "owned");
+        event(&mut cursor, 3, "turn/start", json!({"turn":2}));
+        let owned = event(
+            &mut cursor,
+            4,
+            "user/message",
+            json!({"turn":2,"source":{"kind":"user","rpcId":"owned"},"content":[{"type":"text","text":"owned input"}]}),
+        );
+        assert!(owned
+            .iter()
+            .any(|message| message["method"] == "turn/started"
+                && message["params"]["turn"]["id"] == "owned"));
+        cursor.control_pending = Some("cancel-request".into());
+        let terminal = event(
+            &mut cursor,
+            5,
+            "turn/end",
+            json!({"turn":2,"reason":{"kind":"completed"}}),
+        );
+        assert_eq!(terminal[0]["params"]["turn"]["id"], "owned");
+        assert_eq!(terminal[0]["params"]["turn"]["status"], "completed");
+        assert!(
+            cursor.busy(),
+            "an unconfirmed control receipt must retain its own barrier"
+        );
     }
 }

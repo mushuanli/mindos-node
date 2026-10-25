@@ -102,9 +102,16 @@ impl Dsh {
             .into_iter()
             .find(|s| s["id"] == id)
             .ok_or_else(|| Error::not_found("ENOENT"))?;
+        session["interruptible"] = json!(false);
         if let Some(live) = self.sessions.lock().unwrap().get(id) {
+            let cursor = live.cursor.lock().unwrap();
+            session["interruptible"] = json!(
+                !cursor.turn.is_empty()
+                    && cursor.native_turn.is_some()
+                    && cursor.control_pending.is_none()
+            );
             let current = live.session.lock().unwrap();
-            for key in ["activeTurnId", "lastTurnResult", "owned"] {
+            for key in ["activeTurnId", "lastTurnResult", "lastTurnId", "owned"] {
                 session[key] = current[key].clone();
             }
         }
@@ -113,6 +120,7 @@ impl Dsh {
     pub(super) async fn read_native(&self, name: &str, args: Value) -> Result<Value, Error> {
         let client = self.client().await?;
         match name {
+            "harness_query" => self.query(&client, &args).await,
             "harness_models" => self.models(&client, &args).await,
             "harness_commands" => self.commands(&client, &args).await,
             "harness_sessions" => self.list(&client, &args).await,
@@ -184,6 +192,7 @@ impl Dsh {
     ) -> Result<Value, Error> {
         let id = string(args, "sessionId")?;
         let mut session = self.summary(client, id).await?;
+        let _owned = self.sessions.lock().unwrap().get(id).cloned();
         if name == "harness_rename" {
             rename(client, id, &mut session, args).await?;
         } else {

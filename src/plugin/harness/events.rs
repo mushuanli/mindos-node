@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 const MAX_EVENTS: usize = 1024;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub struct Events {
+    commands: super::command_runs::CommandRuns,
     changed: tokio::sync::watch::Sender<u64>,
     pub epoch: String,
     pub runtime: Option<std::sync::Arc<crate::projects::runtime::ProjectRuntime>>,
@@ -22,6 +23,7 @@ impl Events {
         let mut bytes = [0u8; 16];
         getrandom::getrandom(&mut bytes).expect("random unavailable");
         Self {
+            commands: Default::default(),
             changed: tokio::sync::watch::channel(0).0,
             epoch: bytes.iter().map(|b| format!("{b:02x}")).collect(),
             runtime: None,
@@ -39,6 +41,7 @@ impl Events {
             return Err(Error::too_large("EFBIG"));
         }
         self.track(&message)?;
+        let command = self.commands.observe(&message);
         self.last_activity = std::time::Instant::now();
         if let Some(runtime) = &self.runtime {
             runtime.event(&message);
@@ -58,7 +61,53 @@ impl Events {
             }
         }
         self.changed.send_replace(self.next);
+        if let Some(command) = command {
+            if command["params"]["status"] == "running" {
+                if let Some(runtime) = &self.runtime {
+                    runtime.bind_turn(
+                        command["params"]["threadId"].as_str().unwrap(),
+                        command["params"]["commandId"].as_str().unwrap(),
+                        command["params"]["turnId"].as_str().unwrap(),
+                    );
+                }
+            }
+            self.push(command)?;
+        }
         Ok(())
+    }
+    pub fn register_command(&mut self, thread: &str, operation: &str) -> Result<(), Error> {
+        self.commands.register(thread, operation)
+    }
+    pub fn forget_command(&mut self, thread: &str, operation: &str) {
+        self.commands.forget(thread, operation);
+    }
+    pub fn runtime_metadata(&self, thread: &str) -> Value {
+        let mut value = json!({});
+        let mut lifecycle = false;
+        for (_, event, _, _) in self.entries.iter().rev() {
+            if event["params"]["threadId"] != thread {
+                continue;
+            }
+            let turn = &event["params"]["turn"];
+            match event["method"].as_str() {
+                Some("turn/started") if !lifecycle => {
+                    value["activeTurnId"] = turn["id"].clone();
+                    lifecycle = true;
+                }
+                Some("turn/completed") if value["lastTurnId"].is_null() => {
+                    lifecycle = true;
+                    value["lastTurnId"] = turn["id"].clone();
+                    value["lastTurnResult"] = match turn["status"].as_str() {
+                        Some("completed") => json!("completed"),
+                        Some("failed") => json!("failed"),
+                        Some("interrupted" | "cancelled") => json!("cancelled"),
+                        _ => Value::Null,
+                    };
+                }
+                _ => (),
+            }
+        }
+        value
     }
     fn track(&mut self, message: &Value) -> Result<(), Error> {
         if let Some(id) = message["params"]["threadId"].as_str() {

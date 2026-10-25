@@ -6,6 +6,7 @@ impl Dsh {
         client: &Arc<transport::Client>,
         session: Value,
         slot: Option<tokio::sync::OwnedSemaphorePermit>,
+        operation: &str,
     ) -> Result<Value, Error> {
         let id = string(&session, "id")?.to_owned();
         if session["archived"] == true {
@@ -16,19 +17,26 @@ impl Dsh {
         }
         let slot = match slot {
             Some(slot) => slot,
-            None => self.reserve()?,
+            None => self.reserve(operation).await?,
         };
         let (subscription, snapshot) = self.observe(client, &id).await?;
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(live) = sessions.get(&id) {
+            return Ok(json!({"session":live.session.lock().unwrap().clone()}));
+        }
         let live = Arc::new(tracked(session, &snapshot, slot, &id));
         for message in protocol::baseline(&snapshot, &mut live.cursor.lock().unwrap(), &id) {
             self.events.lock().unwrap().push(message)?;
         }
         let session = live.session.lock().unwrap().clone();
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(id.clone(), live.clone());
-        follow(id, live, subscription, self.events.clone(), client.clone());
+        sessions.insert(id.clone(), live.clone());
+        *live.follow.lock().unwrap() = Some(follow(
+            id,
+            live.clone(),
+            subscription,
+            self.events.clone(),
+            client.clone(),
+        ));
         Ok(json!({"session":session}))
     }
     async fn observe(
@@ -54,12 +62,6 @@ impl Dsh {
         Ok((subscription, snapshot))
     }
 
-    pub(super) fn reserve(&self) -> Result<tokio::sync::OwnedSemaphorePermit, Error> {
-        self.slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::too_many("DSH_SESSION_LIMIT"))
-    }
     pub(super) fn owned(&self, id: &str) -> Result<Arc<Live>, Error> {
         self.sessions
             .lock()
@@ -74,7 +76,8 @@ impl Dsh {
         client: &Arc<transport::Client>,
         args: &Value,
     ) -> Result<Value, Error> {
-        let slot = self.reserve()?;
+        let operation = string(args, "requestId")?;
+        let slot = self.reserve(operation).await?;
         let workspace = self
             .config
             .workspaces
@@ -85,7 +88,7 @@ impl Dsh {
             .native_create(client, workspace, string(args, "requestId")?)
             .await?;
         let session = json!({"id":id,"cwd":workspace.path,"title":"","status":"idle","updatedAt":null,"owned":false,"resumable":true,"archived":false});
-        self.attach(client, session, Some(slot))
+        self.attach(client, session, Some(slot), operation)
             .await
             .map_err(|_| Error::unavailable())
     }
@@ -140,11 +143,13 @@ fn tracked(
             seq: snapshot["cursor"].as_u64(),
             turn: active,
             native_turn,
+            observed_native: native_turn,
             ..Default::default()
         }),
         session: Mutex::new(session),
         stop: CancellationToken::new(),
         _slot: slot,
+        follow: Mutex::new(None),
     }
 }
 

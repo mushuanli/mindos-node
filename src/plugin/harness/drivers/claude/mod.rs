@@ -7,6 +7,7 @@ mod process;
 mod protocol;
 mod search;
 mod sessions;
+mod system;
 use crate::{
     core::error::Error,
     harness::{
@@ -358,6 +359,7 @@ impl Claude {
     }
     async fn read_command(&self, name: &str, args: &Value) -> Result<Value, Error> {
         match name {
+            "harness_query" => self.query(args).await,
             "harness_models" => self.models(args).await,
             "harness_commands" => self.commands(args).await,
             "harness_sessions" => self.list(args).await,
@@ -406,7 +408,7 @@ impl HarnessDriver for Claude {
     }
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":"claude","workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),"projectRuntime":self.config.projects,
-        "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"searchPrompts":true,"searchKeywords":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
+        "capabilities":{"models":true,"slashCommands":true,"commandQueries":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"search":true,"searchPrompts":true,"searchKeywords":true,"fork":false,"rename":false,"archive":false,"unarchive":false,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {

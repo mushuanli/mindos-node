@@ -1,11 +1,14 @@
 //! DSH Remote adapter; native policies and persistence remain owned by DSH.
+mod admission;
 mod catalog;
+mod command_admission;
 mod commands;
 pub mod config;
 mod interactions;
 mod models;
 mod process;
 mod protocol;
+mod reclaim;
 mod sessions;
 mod transport;
 mod turn;
@@ -13,7 +16,7 @@ use crate::{
     core::error::Error,
     harness::{
         config::{ProfileConfig, WorkspaceConfig},
-        driver::HarnessDriver,
+        driver::{HarnessDriver, NativeExecution},
         events::Events,
         service::string,
     },
@@ -32,6 +35,7 @@ struct Live {
     session: Mutex<Value>,
     stop: CancellationToken,
     _slot: tokio::sync::OwnedSemaphorePermit,
+    follow: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 pub struct Dsh {
     config: ProfileConfig,
@@ -99,7 +103,7 @@ fn follow(
     mut subscription: transport::Subscription,
     events: Arc<Mutex<Events>>,
     client: Arc<transport::Client>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let frame = tokio::select! {
@@ -121,7 +125,7 @@ fn follow(
             .unwrap()
             .push(json!({"method":"harness/disconnected","params":{"threadId":id}}));
         client.stop.cancel();
-    });
+    })
 }
 impl HarnessDriver for Dsh {
     fn subscribe(&self, args: Value) -> crate::plugins::EventFuture<'_> {
@@ -130,7 +134,7 @@ impl HarnessDriver for Dsh {
     fn descriptor(&self) -> Value {
         json!({"id":self.config.id,"kind":"dsh","projectRuntime":self.config.projects,
             "workspaces":self.config.workspaces.iter().map(|w|json!({"id":w.id})).collect::<Vec<_>>(),
-            "capabilities":{"models":true,"slashCommands":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,
+            "capabilities":{"models":true,"slashCommands":true,"commandQueries":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,
                 "usage":false,"fork":false,"search":true,"searchPrompts":true,"searchKeywords":true,"rename":true,"archive":true,"unarchive":false,"delete":false,"attachments":[]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
@@ -141,19 +145,43 @@ impl HarnessDriver for Dsh {
         name: &'a str,
         args: &'a Value,
     ) -> BoxFuture<'a, Result<Value, Error>> {
-        Box::pin(async move { self.execute(name, args).await })
+        Box::pin(async move { self.execute_native(name, args, &mut false).await })
+    }
+    fn execute_checked<'a>(
+        &'a self,
+        name: &'a str,
+        args: &'a Value,
+    ) -> BoxFuture<'a, NativeExecution> {
+        Box::pin(async move {
+            let mut dispatched = false;
+            match self.execute_native(name, args, &mut dispatched).await {
+                Err(error) if !dispatched => NativeExecution::NotStarted(error),
+                result => NativeExecution::Dispatched(result),
+            }
+        })
     }
     fn stop(&self) {
         self.stop.cancel();
     }
+    fn reconcile_operation<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Value>, Error>> {
+        Box::pin(async move {
+            Ok(self
+                .prompt_evidence(id)?
+                .or_else(|| self.command_evidence(id)))
+        })
+    }
+    fn operation_settled(&self, id: &str, receipt: &Value) {
+        self.settle_prompt(id, receipt);
+        self.settle_command(id, receipt);
+    }
     fn idle_since(&self) -> Option<std::time::Instant> {
-        if self
-            .sessions
-            .lock()
-            .unwrap()
-            .values()
-            .any(|live| !live.cursor.lock().unwrap().turn.is_empty())
-        {
+        if self.sessions.lock().unwrap().values().any(|live| {
+            let cursor = live.cursor.lock().unwrap();
+            cursor.busy() || live.session.lock().unwrap()["status"] == "active"
+        }) {
             return None;
         }
         self.events.lock().unwrap().idle_since()
@@ -178,6 +206,7 @@ fn update_session(live: &Live, message: &Value) {
         Some("turn/completed") => {
             session["status"] = json!("idle");
             session["activeTurnId"] = Value::Null;
+            session["lastTurnId"] = message["params"]["turn"]["id"].clone();
             session["lastTurnResult"] = if message["params"]["turn"]["status"] == "interrupted" {
                 json!("cancelled")
             } else {

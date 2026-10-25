@@ -12,6 +12,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
+#[path = "command_outputs.rs"]
+mod command_outputs;
 
 struct FixturePlugin {
     executions: Arc<AtomicUsize>,
@@ -52,16 +54,34 @@ impl HarnessDriver for FixtureDriver {
     fn descriptor(&self) -> Value {
         json!({"id":self.profile.id,"kind":"fixture","projectRuntime":self.profile.projects})
     }
-    fn read<'a>(&'a self, _name: &'a str, _args: Value) -> BoxFuture<'a, Result<Value, Error>> {
-        Box::pin(async move { Ok(json!({"sessions":[],"nextCursor":null,"scope":self.scope})) })
+    fn read<'a>(&'a self, name: &'a str, _args: Value) -> BoxFuture<'a, Result<Value, Error>> {
+        Box::pin(async move {
+            if name == "harness_commands" {
+                return Ok(
+                    json!({"commands":[{"name":"compact","id":"fixture-compact","revision":"1","execution":"serial","kind":"action"}]}),
+                );
+            }
+            Ok(json!({"sessions":[],"nextCursor":null,"scope":self.scope}))
+        })
     }
     fn execute<'a>(
         &'a self,
-        _name: &'a str,
-        _args: &'a Value,
+        name: &'a str,
+        args: &'a Value,
     ) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {
             self.executions.fetch_add(1, Ordering::SeqCst);
+            if name == "harness_command" {
+                assert!(args.get("outputMode").is_none());
+                let output = if args["arguments"] == "large" {
+                    "界😀".repeat(40_000)
+                } else {
+                    "small fixture output".into()
+                };
+                return Ok(
+                    json!({"commandId":args["requestId"],"output":output,"status":"completed"}),
+                );
+            }
             Ok(json!({"turnId":"fixture-turn"}))
         })
     }

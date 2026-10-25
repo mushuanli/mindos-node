@@ -70,13 +70,13 @@ impl Dsh {
         let models = catalog(&native)?;
         Ok(json!({"models":models,"default":selection(&native["default"]),"current":current}))
     }
-    pub(super) async fn select_model(
+    pub(super) async fn prepare_model_selection(
         &self,
         client: &transport::Client,
         args: &Value,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<Value>, Error> {
         if args.get("selection").is_none() {
-            return Ok(());
+            return Ok(None);
         }
         let catalog = self.models(client, args).await?;
         let selected =
@@ -90,9 +90,6 @@ impl Dsh {
         if selected["reasoningEffort"].is_string() {
             request["reasoningEffort"] = selected["reasoningEffort"].clone();
         }
-        client
-            .call("session/selectModel", json!({"request":request}))
-            .await?;
-        Ok(())
+        Ok(Some(request))
     }
 }

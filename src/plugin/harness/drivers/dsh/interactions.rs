@@ -69,7 +69,8 @@ fn waterfall(
         Some("user-questions/request") if live.is_some() => "item/tool/requestUserInput",
         _ => return delegate(client, client_id, id),
     };
-    let turn = live.unwrap().cursor.lock().unwrap().turn.clone();
+    let live = live.unwrap();
+    let turn = live.cursor.lock().unwrap().turn.clone();
     events.lock().unwrap().push(json!({"id":id,"method":method,"params":{"threadId":session,"turnId":turn,
         "questions":frame["request"]["questions"],"reason":frame["request"]["displayReason"],"toolName":frame["request"]["toolName"],"decisions":["accept","decline"]},
         "dshClientId":client_id,"dshEvent":frame["event"]}))

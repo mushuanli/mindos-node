@@ -34,6 +34,8 @@ pub struct Process {
     exited: watch::Receiver<bool>,
 }
 pub(super) struct Context {
+    pub command: bool,
+    pub command_output: bool,
     pub models: Arc<Mutex<Value>>,
     pub commands: Arc<Mutex<Value>>,
     pub id: String,
@@ -56,6 +58,8 @@ impl Context {
         models: Arc<Mutex<Value>>,
     ) -> Self {
         Self {
+            command: false,
+            command_output: false,
             models,
             commands,
             id,
@@ -132,6 +136,7 @@ impl Process {
         runtime: Option<Arc<ProjectRuntime>>,
     ) -> Result<Arc<Self>, Error> {
         session["permissionMode"] = json!("manual");
+        session["loaded"] = json!(true);
         let input = child.stdin.take().ok_or_else(Error::internal)?;
         let output = child.stdout.take().ok_or_else(Error::internal)?;
         let (sender, receiver) = mpsc::channel(128);
@@ -301,6 +306,7 @@ fn environment(command: &mut tokio::process::Command, config: &ProfileConfig, sc
     crate::harness::environment::inherit(command);
     command
         .env("CLAUDE_CONFIG_DIR", &config.home)
+        .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
     command.env(
         "HOME",
@@ -417,6 +423,12 @@ async fn send_command(
 }
 fn mark_sent(context: &mut Context, message: &Value) -> Result<(), Error> {
     if message["type"] == "user" {
+        context.command = message["message"]["content"]
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item["text"].as_str())
+            .is_some_and(|text| text.trim_start().starts_with('/'));
+        context.command_output = false;
         context.turn = message["uuid"].as_str().ok_or_else(Error::invalid)?.into();
         context.interrupted = false;
         context.session.lock().unwrap()["status"] = json!("active");

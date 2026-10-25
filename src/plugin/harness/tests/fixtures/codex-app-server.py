@@ -28,6 +28,10 @@ for line in sys.stdin:
     result = {}
     if method == 'model/list':
         result = {'data': [{'id': 'fixture-model', 'model': 'fixture-model', 'displayName': 'Fixture model', 'isDefault': True, 'defaultReasoningEffort': 'medium', 'supportedReasoningEfforts': [{'reasoningEffort': 'medium'}, {'reasoningEffort': 'high'}]}], 'nextCursor': None}
+    elif method == 'skills/list':
+        result = {'data':[{'cwd':params['cwds'][0],'skills':[{'name':'fixture-skill','description':'Fixture skill','path':'/harness/skills/fixture/SKILL.md','enabled':True}],'errors':[]}]}
+    elif method == 'mcpServerStatus/list':
+        result = {'data':[{'name':'fixture','authStatus':'OAuth','tools':{}}],'nextCursor':None}
     elif method == 'thread/start':
         if params.get('sandbox') != ('danger-full-access' if os.environ.get('PI_AGENT_PROJECT') else 'workspace-write'):
             emit({'id': request['id'], 'error': {'code': -32602, 'message': 'sandbox'}})
@@ -42,14 +46,25 @@ for line in sys.stdin:
         thread = threads.get(params['threadId'])
         if thread is None:
             thread = {'id': params['threadId'], 'cwd': '/unauthorized', 'status': {'type': 'idle'}, 'turns': []}
-        result = {'thread': thread}
+        result = {'thread': copy.deepcopy(thread)}
+        if method == 'thread/read' and params.get('includeTurns') is False:
+            result['thread']['turns'] = []
     elif method == 'thread/fork':
         original = threads[params['threadId']]
         thread_id = 'session-' + str(len(threads) + 1)
         thread = copy.deepcopy(original)
         thread.update(id=thread_id, cwd=params['cwd'], forkedFromId=original['id'])
+        if params.get('lastTurnId') and original.get('name') != 'fixture:ignore-checkpoint':
+            index = next(i for i, turn in enumerate(thread['turns']) if turn['id'] == params['lastTurnId'])
+            thread['turns'] = thread['turns'][:index + 1]
         threads[thread_id] = thread
         result = {'thread': thread}
+    elif method == 'thread/turns/list':
+        assert params.get('itemsView') == 'notLoaded'
+        turns = list(reversed(threads[params['threadId']]['turns']))
+        offset = int(params.get('cursor') or 0)
+        size = params.get('limit') or 100
+        result = {'data': turns[offset:offset + size], 'nextCursor': str(offset + size) if offset + size < len(turns) else None}
     elif method == 'thread/name/set':
         threads[params['threadId']]['name'] = params['name']
         if params['name'] == 'fixture:foreign-child':
@@ -68,18 +83,28 @@ for line in sys.stdin:
             emit({'method': 'thread/deleted', 'params': {'threadId': thread_id}})
     elif method == 'thread/compact/start':
         threads[params['threadId']]['compacted'] = True
+        emit({'method':'turn/started','params':{'threadId':params['threadId'],'turn':{'id':'compact-turn','status':'inProgress'}}})
+        emit({'method':'turn/completed','params':{'threadId':params['threadId'],'turn':{'id':'compact-turn','status':'completed'}}})
     elif method == 'review/start':
         assert params['delivery'] == 'inline'
         result = {'reviewThreadId':params['threadId'],'turn':{'id':'review-turn'}}
     elif method == 'turn/start':
-        if params['input'][0]['text'] == 'check-model-selection':
+        if params['input'][0].get('text') == 'check-model-selection':
             assert params['model'] == 'fixture-model' and params['effort'] == 'high'
         turn_count += 1
         turn_id = 'turn-' + str(turn_count)
         result = {'turn': {'id': turn_id}}
         thread_id = params['threadId']
         threads[thread_id]['status'] = {'type': 'active'}
-        if params['input'][0]['text'] == 'fixture:long-unflushed-response':
+        if params['input'][0].get('text', '').startswith('fixture:checkpoint-'):
+            status = 'inProgress' if params['input'][0]['text'] == 'fixture:checkpoint-open-turn' else 'completed'
+            threads[thread_id]['turns'].append({'id': turn_id, 'status': status, 'items': []})
+            threads[thread_id]['status'] = {'type': 'idle'}
+            emit({'id': request['id'], 'result': result})
+            if status == 'completed':
+                emit({'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': turn_id, 'status': status}}})
+            continue
+        if params['input'][0].get('text') == 'fixture:long-unflushed-response':
             home = os.environ.get('CODEX_HOME', threads[thread_id]['cwd'])
             directory = os.path.join(home, 'sessions')
             os.makedirs(directory, exist_ok=True)
@@ -94,12 +119,12 @@ for line in sys.stdin:
             for offset in range(0, len(text), 128):
                 emit({'method': 'item/agentMessage/delta', 'params': {'threadId': thread_id, 'turnId': turn_id, 'itemId': 'live-answer', 'delta': text[offset:offset + 128]}})
             continue
-        if params['input'][0]['text'] == 'complete-before-start-reply':
+        if params['input'][0].get('text') == 'complete-before-start-reply':
             threads[thread_id]['status'] = {'type': 'idle'}
             emit({'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': turn_id, 'status': 'completed'}}})
             emit({'id': request['id'], 'result': result})
             continue
-        if params['input'][0]['text'] == 'approval-before-start-reply':
+        if params['input'][0].get('text') == 'approval-before-start-reply':
             awaiting_turn = {'id': request['id'], 'result': result}
             emit({'id': 'approval-early', 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': thread_id, 'turnId': turn_id, 'command': 'echo test'}})
             continue

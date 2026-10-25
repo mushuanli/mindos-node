@@ -324,6 +324,64 @@ async fn idle(service: &Harnesses, id: &Value) {
     }
     panic!("turn did not complete");
 }
+
+#[tokio::test]
+async fn claude_status_queries_preserve_active_execution_and_native_system_output() {
+    let root = tempfile::tempdir().unwrap();
+    let service = fixture(root.path());
+    let created = mutate(
+        &service,
+        "harness_create",
+        "state-create",
+        json!({"workspaceId":"workspace"}),
+    )
+    .await;
+    let id = created["result"]["session"]["id"].clone();
+    let started = mutate(
+        &service,
+        "harness_turn",
+        "state-turn",
+        json!({"sessionId":id,"prompt":"wait"}),
+    )
+    .await;
+    let turn = started["result"]["turnId"].clone();
+    let status = mutate(
+        &service,
+        "harness_command",
+        "state-query",
+        json!({"sessionId":id,"command":"session:status"}),
+    )
+    .await;
+    assert_eq!(status["outcome"], "committed");
+    let state: Value = serde_json::from_str(status["result"]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(state["status"], "active");
+    assert_eq!(state["activeTurnId"], turn);
+    mutate(
+        &service,
+        "harness_interrupt",
+        "state-stop",
+        json!({"sessionId":id,"turnId":turn}),
+    )
+    .await;
+    idle(&service, &id).await;
+    mutate(
+        &service,
+        "harness_command",
+        "compact-query",
+        json!({"sessionId":id,"command":"compact"}),
+    )
+    .await;
+    idle(&service, &id).await;
+    let events = event_support::snapshot(&service, json!({"profileId":"claude"}))
+        .await
+        .unwrap();
+    assert!(events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["message"]["params"]["item"]["text"] == "Context compaction completed"));
+    service.close().await;
+}
 #[tokio::test]
 async fn native_command_catalog_and_dispatch_are_session_scoped_and_receipted() {
     let root = tempfile::tempdir().unwrap();
@@ -346,6 +404,25 @@ async fn native_command_catalog_and_dispatch_are_session_scoped_and_receipted() 
     )
     .await;
     let id = &created["result"]["session"]["id"];
+    let query_args = json!({"profileId":"claude","sessionId":id,"command":"session:status","requestId":"read-state"});
+    let observed = service
+        .call("harness_query", query_args.clone())
+        .await
+        .unwrap();
+    assert_eq!(observed["commandId"], "read-state");
+    assert_eq!(observed["status"], "completed");
+    let receipt = service
+        .call(
+            "harness_operation",
+            json!({"profileId":"claude","epoch":"epoch","requestId":"read-state"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["outcome"], "not-committed");
+    let mut serial = query_args;
+    serial["command"] = json!("permissions");
+    assert!(service.call("harness_query", serial).await.is_err());
+
     let catalog = call(&service, "harness_commands", json!({"sessionId":id})).await;
     let rows = catalog["commands"].as_array().unwrap();
     assert!(rows

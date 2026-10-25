@@ -31,7 +31,12 @@ for line in sys.stdin:
  elif value['type']=='user':
   assert isinstance(value['message']['content'],list)
   text='\n'.join(p.get('text','') for p in value['message']['content'])
-  if text.split()[0] in ['/compact','/condense']:finish();continue
+  if text.split()[0] in ['/compact','/condense']:
+   emit({'type':'system','subtype':'compact_boundary','compact_metadata':{'trigger':'manual','pre_tokens':32}});finish();continue
+  if text=='native-state-events':
+   emit({'type':'system','subtype':'session_state_changed','state':'waiting_for_input'})
+   emit({'type':'system','subtype':'local_command','content':'Native state output'})
+   finish();continue
   append({**value,'type':'user'})
   emit(value)
   if text=='check-model-selection':assert model=='fixture-model' and effort=='high'

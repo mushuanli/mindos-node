@@ -515,7 +515,7 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "description": "Create a native branch preserving the source history",
+    "description": "Create a native branch; lastTurnId requires checkpointFork and returns explicit boundary verification",
     "inputSchema": {
       "dependentRequired": {
         "projectId": [
@@ -558,6 +558,12 @@
         },
         "sessionId": {
           "type": "string"
+        },
+        "lastTurnId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Exact terminal native turn to copy through; requires capabilities.checkpointFork. Never falls back to latest."
         }
       },
       "required": [
@@ -612,6 +618,13 @@
         "revision": {
           "minimum": 1,
           "type": "integer"
+        },
+        "outputMode": {
+          "type": "string",
+          "enum": [
+            "reference"
+          ],
+          "description": "Opt in to a bounded output preview and immutable outputRef. Omit for the full compatible result; this does not change execution identity."
         }
       },
       "required": [
@@ -622,6 +635,80 @@
       "type": "object"
     },
     "name": "harness_operation"
+  },
+  {
+    "annotations": {
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Read an immutable UTF-8 command output byte range retained in its original receipt without initializing a native driver",
+    "inputSchema": {
+      "dependentRequired": {
+        "projectId": [
+          "revision"
+        ],
+        "readOnly": [
+          "projectId",
+          "revision"
+        ],
+        "revision": [
+          "projectId"
+        ]
+      },
+      "properties": {
+        "epoch": {
+          "description": "Use harness_profiles.epoch for harness operations; /v1/capabilities.processEpoch for project_exec.",
+          "type": "string"
+        },
+        "profileId": {
+          "description": "Authorized identifier from harness_profiles.",
+          "type": "string"
+        },
+        "projectId": {
+          "description": "Identifier from project_list. Project context also requires revision; non-legacy principals require project context.",
+          "type": "string"
+        },
+        "readOnly": {
+          "type": "boolean"
+        },
+        "requestId": {
+          "description": "Stable mutation identifier. Reuse it only for the same operation; receipts are scoped to the current epoch.",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      },
+      "required": [
+        "profileId",
+        "epoch",
+        "requestId",
+        "sha256",
+        "bytes",
+        "offset",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "name": "harness_command_output"
   },
   {
     "annotations": {
@@ -953,6 +1040,83 @@
   {
     "annotations": {
       "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Read an advertised query command without resuming a session or creating a mutation receipt",
+    "inputSchema": {
+      "dependentRequired": {
+        "projectId": [
+          "revision"
+        ],
+        "readOnly": [
+          "projectId",
+          "revision"
+        ],
+        "revision": [
+          "projectId"
+        ]
+      },
+      "properties": {
+        "arguments": {
+          "maxLength": 131072,
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "profileId": {
+          "description": "Authorized identifier from harness_profiles.",
+          "type": "string"
+        },
+        "projectId": {
+          "description": "Identifier from project_list. Project context also requires revision; non-legacy principals require project context.",
+          "type": "string"
+        },
+        "readOnly": {
+          "type": "boolean"
+        },
+        "requestId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$",
+          "description": "Correlation identifier for this read-only observation; not a mutation receipt."
+        },
+        "revision": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "expectedCommand": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        }
+      },
+      "required": [
+        "profileId",
+        "requestId",
+        "sessionId",
+        "command"
+      ],
+      "type": "object"
+    },
+    "name": "harness_query"
+  },
+  {
+    "annotations": {
+      "openWorldHint": true,
       "readOnlyHint": false
     },
     "description": "Execute an advertised native command with the existing mutation receipt contract",
@@ -1021,6 +1185,29 @@
         },
         "sessionId": {
           "type": "string"
+        },
+        "expectedCommand": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        "outputMode": {
+          "type": "string",
+          "enum": [
+            "reference"
+          ],
+          "description": "Opt in to a bounded output preview and immutable outputRef. Omit for the full compatible result; this does not change execution identity."
         }
       },
       "required": [

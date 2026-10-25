@@ -142,6 +142,9 @@ def main():
             events = observer.wait('harness', lambda page: any(request['params']['threadId'] == session_id for request in page['requests']))
             approval = next(request for request in events['requests'] if request['params']['threadId'] == session_id)
             assert approval, 'Native Write approval was not received'
+            queried = mutate('harness_command', {'sessionId': session_id, 'command': 'session:status'})
+            state = json.loads(queried['output'])
+            assert state['scope'] == 'controlled' and state['activeTurnId'] == turn['turnId']
             mutate('harness_respond', {'nativeRequestId': approval['id'], 'response': {'decision': 'accept'}})
             for _ in range(200):
                 ended = call('harness_session_info', {**scope, 'sessionId': session_id})['session']
@@ -149,6 +152,10 @@ def main():
                     break
                 time.sleep(.1)
             assert ended['status'] == 'idle' and ended['owned'] is True
+            context = json.loads(mutate('harness_command', {'sessionId': session_id, 'command': 'session:context'})['output'])
+            assert isinstance(context['totalTokens'], (float, int))
+            mcp = json.loads(mutate('harness_command', {'sessionId': session_id, 'command': 'session:mcp'})['output'])
+            assert isinstance(mcp, list)
             assert (root / 'export/project/fixture.md').read_text() == 'Claude watcher fixture\n'
             observer.wait('files', lambda page: page['version'] != watcher['version'])
             for _ in range(100):

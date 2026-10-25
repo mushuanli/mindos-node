@@ -208,6 +208,9 @@ async fn codex_commands_use_native_controls_and_keep_receipts() {
     )
     .await;
     let id = &created["result"]["session"]["id"];
+    let observed = service.call("harness_query", json!({"profileId":"codex","sessionId":id,"command":"session:status","requestId":"query-state"})).await.unwrap();
+    assert_eq!(observed["status"], "completed");
+    assert!(service.call("harness_query", json!({"profileId":"codex","sessionId":id,"command":"compact","requestId":"invalid-query"})).await.is_err());
     let args = json!({"sessionId":id,"command":"compact"});
     let accepted = mutate(&service, "harness_command", "compact-once", args.clone()).await;
     assert_eq!(accepted["outcome"], "committed");
@@ -231,6 +234,68 @@ async fn codex_commands_use_native_controls_and_keep_receipts() {
     )
     .await;
     assert_eq!(rejected["outcome"], "not-committed");
+    service.close().await;
+}
+
+#[tokio::test]
+async fn codex_queries_expose_runtime_identity_and_reject_stale_command_bindings() {
+    let root = tempfile::tempdir().unwrap();
+    let service = service(root.path());
+    let created = mutate(
+        &service,
+        "harness_create",
+        "status-create",
+        json!({"workspaceId":"project"}),
+    )
+    .await;
+    let id = created["result"]["session"]["id"].clone();
+    let started = mutate(
+        &service,
+        "harness_turn",
+        "status-turn",
+        json!({"sessionId":id,"prompt":"working"}),
+    )
+    .await;
+    let turn = started["result"]["turnId"].clone();
+    let status = mutate(
+        &service,
+        "harness_command",
+        "status-query",
+        json!({"sessionId":id,"command":"session:status"}),
+    )
+    .await;
+    assert_eq!(status["outcome"], "committed");
+    let state: Value = serde_json::from_str(status["result"]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(state["scope"], "controlled");
+    assert_eq!(state["status"], "active");
+    assert_eq!(state["activeTurnId"], turn);
+    let rejected = mutate(
+        &service,
+        "harness_command",
+        "stale-query",
+        json!({"sessionId":id,"command":"session:status","expectedCommand":{"revision":"stale"}}),
+    )
+    .await;
+    assert_eq!(rejected["code"], "HARNESS_COMMAND_CHANGED");
+    let skills = service
+        .call(
+            "harness_commands",
+            json!({"profileId":"codex","sessionId":id}),
+        )
+        .await
+        .unwrap();
+    assert!(skills["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["name"] == "skill:fixture-skill" && row["kind"] == "prompt"));
+    mutate(
+        &service,
+        "harness_interrupt",
+        "status-stop",
+        json!({"sessionId":id,"turnId":turn}),
+    )
+    .await;
     service.close().await;
 }
 
@@ -645,6 +710,103 @@ async fn native_branches_keep_parent_identity_and_fork_receipts_prevent_duplicat
     )
     .await;
     assert_eq!(denied["code"], "EACCES");
+    service.close().await;
+}
+
+#[tokio::test]
+async fn checkpoint_forks_copy_only_through_the_named_terminal_turn_and_reuse_receipts() {
+    let root = tempfile::tempdir().unwrap();
+    let service = service(root.path());
+    mutate(
+        &service,
+        "harness_create",
+        "base",
+        json!({"workspaceId":"project"}),
+    )
+    .await;
+    for id in ["one", "two"] {
+        mutate(
+            &service,
+            "harness_turn",
+            id,
+            json!({"sessionId":"session-1","prompt":"fixture:checkpoint-turn"}),
+        )
+        .await;
+    }
+    let args = json!({"sessionId":"session-1","lastTurnId":"turn-1"});
+    let forked = mutate(&service, "harness_fork", "checkpoint", args.clone()).await;
+    assert_eq!(forked["outcome"], "committed");
+    assert_eq!(
+        forked["result"]["checkpoint"],
+        json!({"sourceSessionId":"session-1","turnId":"turn-1","verified":true})
+    );
+    let child = forked["result"]["session"]["id"].as_str().unwrap();
+    let history = service
+        .call(
+            "harness_session_read",
+            json!({"profileId":"codex","sessionId":child}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(history["turns"].as_array().unwrap().len(), 1);
+    assert_eq!(history["turns"][0]["id"], "turn-1");
+    assert_eq!(
+        mutate(&service, "harness_fork", "checkpoint", args).await,
+        forked
+    );
+    service.close().await;
+}
+
+#[tokio::test]
+async fn checkpoint_forks_preserve_created_identity_when_native_ignores_the_boundary() {
+    let root = tempfile::tempdir().unwrap();
+    let service = service(root.path());
+    mutate(
+        &service,
+        "harness_create",
+        "base",
+        json!({"workspaceId":"project"}),
+    )
+    .await;
+    for id in ["one", "two"] {
+        mutate(
+            &service,
+            "harness_turn",
+            id,
+            json!({"sessionId":"session-1","prompt":"fixture:checkpoint-turn"}),
+        )
+        .await;
+    }
+    mutate(
+        &service,
+        "harness_rename",
+        "name",
+        json!({"sessionId":"session-1","name":"fixture:ignore-checkpoint"}),
+    )
+    .await;
+    let result = mutate(
+        &service,
+        "harness_fork",
+        "checkpoint",
+        json!({"sessionId":"session-1","lastTurnId":"turn-1"}),
+    )
+    .await;
+    assert_eq!(result["outcome"], "committed");
+    assert_eq!(result["result"]["checkpoint"]["verified"], false);
+    assert_eq!(
+        result["result"]["checkpoint"]["code"],
+        "HARNESS_CHECKPOINT_BOUNDARY_MISMATCH"
+    );
+    assert_ne!(result["result"]["session"]["id"], "session-1");
+    let denied = mutate(
+        &service,
+        "harness_fork",
+        "missing",
+        json!({"sessionId":"session-1","lastTurnId":"unknown"}),
+    )
+    .await;
+    assert_eq!(denied["outcome"], "not-committed");
+    assert_eq!(denied["code"], "HARNESS_CHECKPOINT_NOT_FOUND");
     service.close().await;
 }
 

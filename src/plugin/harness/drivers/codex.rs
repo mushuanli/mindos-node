@@ -81,11 +81,10 @@ impl Codex {
         Ok(bridge)
     }
     async fn read(&self, name: &str, args: Value) -> Result<Value, Error> {
-        if name == "harness_commands" {
-            return Ok(commands::catalog());
-        }
         let bridge = self.bridge().await?;
         match name {
+            "harness_query" => self.query(&bridge, &args).await,
+            "harness_commands" => self.commands(&bridge, &args).await,
             "harness_models" => self.models(&bridge, &args).await,
             "harness_session_search" => super::search::search(self, &bridge, &args).await,
             "harness_sessions" => self.sessions(&bridge, &args).await,
@@ -119,7 +118,7 @@ impl Codex {
                     .as_str()
                     .is_some_and(|cwd| self.authorized(cwd))
             })
-            .map(|thread| self.session(thread))
+            .map(|thread| self.session(&self.runtime_thread(bridge, thread)))
             .collect::<Vec<_>>();
         Ok(json!({"sessions":sessions,"nextCursor":result["nextCursor"]}))
     }
@@ -129,13 +128,15 @@ impl Codex {
             fields.remove("turns");
         }
         json!({"id":thread["id"],"title":super::presentation::session_title(thread),
+            "loaded":thread["status"]["type"] != "notLoaded",
             "cwd":thread["cwd"],"status":thread["status"]["type"],"statusDetails":thread["status"],"createdAt":super::presentation::time_ms(&thread["createdAt"]),
             "updatedAt":super::presentation::time_ms(&thread["updatedAt"]),
             "branchName":if thread["forkedFromId"].is_string() {thread["name"].clone()} else {Value::Null},
             "parentSessionId":thread["forkedFromId"],"forkable":thread["cwd"].as_str().is_some_and(|cwd|self.authorized(cwd)),
             "owned":self.owned.try_lock().is_ok_and(|owned|thread["id"].as_str().is_some_and(|id|owned.contains(id))),
-            "activeTurnId":thread["turns"].as_array().and_then(|turns|turns.iter().find(|turn|turn["status"]=="inProgress")).map(|turn|turn["id"].clone()),
-            "lastTurnResult":thread["turns"].as_array().and_then(|turns| turns.last()).and_then(|turn| match turn["status"].as_str() {Some("completed")=>Some("completed"),Some("failed")=>Some("failed"),Some("interrupted")=>Some("cancelled"),_=>None}),
+            "activeTurnId":thread.get("activeTurnId").cloned().unwrap_or_else(||thread["turns"].as_array().and_then(|turns|turns.iter().find(|turn|turn["status"]=="inProgress")).map(|turn|turn["id"].clone()).unwrap_or(Value::Null)),
+            "lastTurnId":thread["lastTurnId"],
+            "lastTurnResult":thread.get("lastTurnResult").cloned().unwrap_or_else(||thread["turns"].as_array().and_then(|turns| turns.last()).and_then(|turn| match turn["status"].as_str() {Some("completed")=>Some("completed"),Some("failed")=>Some("failed"),Some("interrupted")=>Some("cancelled"),_=>None}).map(Value::from).unwrap_or(Value::Null)),
             "archived":thread["archived"].as_bool().unwrap_or_else(||thread["path"].as_str().is_some_and(|path| path.contains("/archived_sessions/"))),
             "resumable":thread["cwd"].as_str().is_some_and(|cwd| self.authorized(cwd)),"native":metadata})
     }
@@ -231,7 +232,17 @@ impl Codex {
             return Err(Error::invalid());
         }
         let input = super::attachments::input(prompt, &args["attachments"])?;
-        let params = self.turn_params(bridge, args, json!(input)).await?;
+        self.start_input(bridge, args, json!(input)).await
+    }
+    async fn start_input(
+        &self,
+        bridge: &Bridge,
+        args: &Value,
+        input: Value,
+    ) -> Result<Value, Error> {
+        let id = string(args, "sessionId")?;
+        self.require_owned(id).await?;
+        let params = self.turn_params(bridge, args, input).await?;
         let operation = string(args, "requestId")?;
         if let Some(runtime) = &self.runtime {
             runtime.begin(id, operation)?;
@@ -347,7 +358,24 @@ impl Codex {
         {
             return Err(Error::forbidden("EACCES"));
         }
-        Ok(thread)
+        Ok(self.runtime_thread(bridge, &thread))
+    }
+    fn runtime_thread(&self, bridge: &Bridge, thread: &Value) -> Value {
+        let mut thread = thread.clone();
+        let metadata = bridge
+            .events
+            .lock()
+            .unwrap()
+            .runtime_metadata(thread["id"].as_str().unwrap_or(""));
+        if thread["status"]["type"] == "active" && metadata["activeTurnId"].is_string() {
+            thread["activeTurnId"] = metadata["activeTurnId"].clone();
+        }
+        for key in ["lastTurnId", "lastTurnResult"] {
+            if !metadata[key].is_null() {
+                thread[key] = metadata[key].clone();
+            }
+        }
+        thread
     }
     pub(super) async fn history(&self, bridge: &Bridge, args: &Value) -> Result<Value, Error> {
         let id = string(args, "sessionId")?;
@@ -485,15 +513,26 @@ impl Codex {
     async fn fork(&self, bridge: &Bridge, args: &Value) -> Result<Value, Error> {
         let thread = self.summary(bridge, string(args, "sessionId")?).await?;
         let cwd = self.fork_cwd(&thread)?;
-        let result = bridge.persistent_call("thread/fork",json!({"threadId":string(args,"sessionId")?,"cwd":cwd,"excludeTurns":true,
-            "approvalPolicy":"on-request","sandbox":if self.runtime.is_some(){"danger-full-access"}else{"workspace-write"}})).await?;
+        self.require_checkpoint(bridge, args).await?;
+        let mut params = json!({"threadId":string(args,"sessionId")?,"cwd":cwd,"excludeTurns":true,
+            "approvalPolicy":"on-request","sandbox":if self.runtime.is_some(){"danger-full-access"}else{"workspace-write"}});
+        if let Some(checkpoint) = args.get("lastTurnId") {
+            params["lastTurnId"] = checkpoint.clone();
+        }
+        let result = bridge.persistent_call("thread/fork", params).await?;
         let mut created = result["thread"].clone();
         let id = string(&created, "id")
             .map_err(|_| Error::internal())?
             .to_owned();
         self.owned.lock().await.insert(id.clone());
         self.name_branch(bridge, args, &mut created, &id).await;
-        Ok(json!({"session":self.session(&created)}))
+        let mut session = self.session(&created);
+        let mut result = json!({});
+        if let Some(checkpoint) = self.checkpoint_result(bridge, args, &mut session).await {
+            result["checkpoint"] = checkpoint;
+        }
+        result["session"] = session;
+        Ok(result)
     }
     async fn name_branch(&self, bridge: &Bridge, args: &Value, created: &mut Value, id: &str) {
         // A naming failure cannot turn an already committed fork into a replayable failure.
@@ -540,7 +579,7 @@ impl HarnessDriver for Codex {
         json!({"id":self.config.id,"kind":self.config.kind,
             "workspaces":self.config.workspaces.iter().map(|w| json!({"id":w.id})).collect::<Vec<_>>(),
             "projectRuntime":self.config.projects,
-            "capabilities":{"models":true,"slashCommands":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"fork":true,"search":true,"searchPrompts":true,"searchKeywords":true,"rename":true,"archive":true,"unarchive":true,"delete":true,"attachments":["text","image"]}})
+            "capabilities":{"models":true,"slashCommands":true,"commandQueries":true,"usage":true,"history":true,"create":true,"resume":true,"interrupt":true,"interactions":true,"fork":true,"checkpointFork":true,"search":true,"searchPrompts":true,"searchKeywords":true,"rename":true,"archive":true,"unarchive":true,"delete":true,"attachments":["text","image"]}})
     }
     fn read<'a>(&'a self, name: &'a str, args: Value) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move { self.read(name, args).await })
@@ -573,6 +612,8 @@ impl HarnessDriver for Codex {
         })
     }
 }
+#[path = "codex/checkpoints.rs"]
+mod checkpoints;
 #[path = "codex/commands.rs"]
 mod commands;
 #[path = "codex/models.rs"]
