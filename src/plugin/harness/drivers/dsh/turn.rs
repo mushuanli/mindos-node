@@ -48,6 +48,7 @@ impl Dsh {
         }
         cursor.turn = operation.into();
         cursor.native_turn = None;
+        cursor.observed_native = None;
         cursor.expected_request = Some(operation.into());
         cursor.admission = Some(admission::PromptAdmission::new(operation, prompt));
         live.session.lock().unwrap()["activeTurnId"] = json!(operation);

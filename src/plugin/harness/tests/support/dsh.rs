@@ -82,20 +82,19 @@ impl Host {
         Self { url, state, task }
     }
     pub fn emit(&self, session: &str, frame: Value) {
-        let turn = (frame["event"]["type"] == "turn/start")
-            .then(|| frame["event"]["data"]["turn"].clone());
+        let starts_turn = frame["event"]["type"] == "turn/start";
         self.emit_frame(session, frame);
-        if let Some(turn) = turn {
+        if starts_turn {
             if self
                 .state
                 .identify_prompts
                 .load(std::sync::atomic::Ordering::SeqCst)
             {
-                self.identify_prompt(session, turn);
+                self.identify_prompt(session);
             }
         }
     }
-    fn identify_prompt(&self, session: &str, turn: Value) {
+    fn identify_prompt(&self, session: &str) {
         let request = self
             .state
             .calls
@@ -110,7 +109,7 @@ impl Host {
             .map(|row| row["payload"]["args"]["request"].clone());
         if let Some(request) = request {
             self.emit_frame(session, json!({"type":"event","event":{"type":"user/message","data":{
-                "turn":turn,"source":{"kind":"user","rpcId":request["requestId"]},"content":request["content"]}}}));
+                "source":{"kind":"user","rpcId":request["requestId"]},"content":request["content"]}}}));
         }
     }
     fn emit_frame(&self, session: &str, mut frame: Value) {

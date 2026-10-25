@@ -95,7 +95,7 @@ fn record_items(event: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value>
             .as_ref()
             .is_some_and(|value| value.mismatch)
     {
-        cursor.native_turn = event["data"]["turn"].as_u64();
+        cursor.native_turn = event["data"]["turn"].as_u64().or(cursor.observed_native);
         cursor.observed_native = cursor.native_turn;
     }
     if matches!(event["type"].as_str(), Some("command/run" | "command/done")) {
@@ -264,6 +264,9 @@ fn event(frame: &Value, cursor: &mut Cursor, session: &str) -> Vec<Value> {
         cursor.turn.clear();
         cursor.native_turn = None;
         cursor.expected_request = None;
+    }
+    if event["type"] == "turn/end" && cursor.observed_native == event["data"]["turn"].as_u64() {
+        cursor.observed_native = None;
     }
     messages
 }
@@ -531,5 +534,64 @@ mod identity_tests {
             cursor.busy(),
             "an unconfirmed control receipt must retain its own barrier"
         );
+    }
+    #[test]
+    fn identifies_turn_from_native_user_message_without_a_turn_field() {
+        let mut cursor = Cursor {
+            turn: "owned".into(),
+            expected_request: Some("owned".into()),
+            admission: Some(super::super::admission::PromptAdmission::new(
+                "owned", "input",
+            )),
+            ..Default::default()
+        };
+        event(&mut cursor, 0, "turn/start", json!({"turn":1}));
+        let started = event(
+            &mut cursor,
+            1,
+            "user/message",
+            json!({"role":"user","source":{"kind":"user","rpcId":"owned"},"content":[{"type":"text","text":"input"}]}),
+        );
+        assert_eq!(cursor.native_turn, Some(1));
+        assert!(cursor.admission.as_ref().unwrap().accepted);
+        assert!(started
+            .iter()
+            .any(|message| message["method"] == "turn/started"));
+        let done = event(
+            &mut cursor,
+            2,
+            "turn/end",
+            json!({"turn":1,"reason":{"kind":"completed"}}),
+        );
+        assert!(done
+            .iter()
+            .any(|message| message["method"] == "turn/completed"
+                && message["params"]["turn"]["id"] == "owned"));
+        assert!(cursor.turn.is_empty());
+    }
+
+    #[test]
+    fn a_closed_native_turn_is_not_reused_for_a_later_unbound_prompt() {
+        let mut cursor = Cursor {
+            turn: "owned".into(),
+            expected_request: Some("owned".into()),
+            observed_native: Some(1),
+            ..Default::default()
+        };
+        assert!(event(
+            &mut cursor,
+            0,
+            "turn/end",
+            json!({"turn":1,"reason":{"kind":"completed"}})
+        )
+        .is_empty());
+        event(
+            &mut cursor,
+            1,
+            "user/message",
+            json!({"source":{"kind":"user","rpcId":"owned"},"content":[{"type":"text","text":"input"}]}),
+        );
+        assert_eq!(cursor.native_turn, None);
+        assert_eq!(cursor.turn, "owned");
     }
 }

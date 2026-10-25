@@ -188,6 +188,8 @@ retained_files = 5
 
 0.3.4 的 DSH 项目启动保留授权目录的原物理路径作为兼容别名。只有虚拟路径时，DSH 原生 workspace 会将无法规范化原 cwd 的历史成员过滤为空，即使 session/list 已读到原日志。通用 `ProjectRuntime.prepare_with_source_paths` 从已固定身份的挂载生成等权别名，保留根和嵌套挂载的读写限制，不开放父目录或其他 export；别名再次经过通用目标与权限校验，不允许遮蔽 /tmp 等运行时目录。普通进程与其他驱动的默认命名空间不变，DSH 不绕过成员关系检查。
 
+0.4.1 修复 DSH 真实事件的 turn 关联：`user/message` 只携带消息身份、内容和来源，不要求额外 `turn` 字段；适配器在同一连续事件流中用已核对 requestId/内容的用户消息关联前面的 `turn/start`，再按对应 `turn/end` 确认完成。已关闭的 turn 不用于后续提交，正文相似、原生 idle 或助手输出均不能代替完成确认。测试替身使用相同原生消息形状；否则会出现回复已完成但活动 turn、项目执行租约和命令队列一直未释放。运行中的 node 必须更新至此修复版本，更新 httpd 本身不会改变原生适配器。
+
 0.3.5 的历史投影使用持久事件中的原生 turn 编号，不再将不同轮次合并；分页从轮次中间开始也保持相同身份。实时流仍沿用当前提交的 requestId。DSH 会话额外返回可选 archiveAllowed，允许客户端显示空闲但未附着会话的归档操作；不以 owned 推测原生管理权限，归档提交仍再次核验原生运行状态与目录授权。
 
 默认托管模式显式配置 `command` 和已存在的私有 `home`（DSH_HOME），由 mindos-node 延迟启动 `dsh --patch <临时传输配置> --profile web --no-open --host 127.0.0.1 --port 0`，读取 readiness URL 后在内存交换 cookie。临时 overlay 在私有 home 内使用 0600 权限，固定回环地址、随机端口、readiness 输出及禁止打开浏览器，避免用户 profile 的固定绑定覆盖启动参数；进程回收后删除 overlay。请先在该 home 完成 DSH profile 初始化、模型与凭据配置；启动超时默认 120 秒。项目模式 `projects = true` 使用共同 ProjectRuntime/launcher、目录 grants 与文件活动租约；`[projects].network = true` 允许本机控制连接和模型网络。DSH 应安装在沙箱可访问的系统目录；源码开发启动器可能引用沙箱外路径，不能直接当作可部署命令。

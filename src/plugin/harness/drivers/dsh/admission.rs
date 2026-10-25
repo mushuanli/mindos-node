@@ -25,7 +25,6 @@ impl PromptAdmission {
             || !protocol::surface_appends(&event["surfaceOp"])
             || data["source"]["kind"] != "user"
             || data["source"]["rpcId"] != self.id
-            || data["turn"].as_u64().is_none()
         {
             return;
         }
