@@ -180,8 +180,10 @@ impl Dsh {
         if has_more && before.is_none() {
             return Err(Error::invalid());
         }
-        Ok(json!({"session":session,"turns":protocol::turns(items),
-            "nextCursor":if has_more{json!(format!("{through}:{}",before.unwrap()))}else{Value::Null}}))
+        Ok(
+            json!({"session":session,"turns":super::history_proof::annotate(protocol::turns(items), &records, id),
+            "nextCursor":if has_more{json!(format!("{through}:{}",before.unwrap()))}else{Value::Null}}),
+        )
     }
 
     pub(super) async fn manage(

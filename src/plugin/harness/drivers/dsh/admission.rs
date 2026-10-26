@@ -58,7 +58,7 @@ impl PromptAdmission {
         self.accepted.then(|| Ok(json!({"turnId":self.id})))
     }
 }
-fn digest(value: &Value) -> Option<[u8; 32]> {
+pub(super) fn digest(value: &Value) -> Option<[u8; 32]> {
     let parts = value.as_array().filter(|parts| parts.len() == 1)?;
     if parts[0]["type"] != "text" {
         return None;

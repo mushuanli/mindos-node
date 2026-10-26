@@ -1489,3 +1489,54 @@ async fn a_foreign_turn_cannot_complete_or_cancel_the_uncertain_owned_input() {
         .any(|row| row["method"] == "session/cancel"));
     service.close().await;
 }
+
+#[tokio::test]
+async fn cold_history_proves_original_prompt_completion_without_adopting_the_session() {
+    let root = tempfile::tempdir().unwrap();
+    let host = fixture::Host::new(root.path()).await;
+    for (kind, data) in [
+        ("turn/start", json!({"turn":1})),
+        (
+            "user/message",
+            json!({"source":{"kind":"user","rpcId":"original"},"content":[{"type":"text","text":"frozen input"}]}),
+        ),
+        (
+            "assistant/message",
+            json!({"content":[{"type":"text","text":"done"}]}),
+        ),
+        ("turn/end", json!({"turn":1,"reason":{"kind":"completed"}})),
+    ] {
+        host.emit(
+            "existing",
+            json!({"type":"event","event":{"type":kind,"data":data}}),
+        );
+    }
+    let service = service(root.path(), &host.url);
+    let history = service
+        .call(
+            "harness_session_read",
+            json!({"profileId":"dsh","sessionId":"existing"}),
+        )
+        .await
+        .unwrap();
+    let turn = history["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["id"] == "existing-1")
+        .unwrap();
+    assert_eq!(turn["status"], "completed");
+    assert_eq!(turn["submissionEvidence"]["requestId"], "original");
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        turn["submissionEvidence"]["promptSha256"],
+        format!("{:x}", Sha256::digest(b"frozen input"))
+    );
+    assert!(
+        !host.state.calls.lock().unwrap().iter().any(|call| matches!(
+            call["method"].as_str(),
+            Some("session/prompt" | "session/create" | "session/resume")
+        ))
+    );
+    service.close().await;
+}

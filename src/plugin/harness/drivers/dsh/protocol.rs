@@ -323,7 +323,7 @@ pub fn turns(items: Vec<Value>) -> Vec<Value> {
     turns
 }
 
-fn terminal_result(reason: &Value) -> &'static str {
+pub(super) fn terminal_result(reason: &Value) -> &'static str {
     match reason["kind"].as_str() {
         Some("completed") => "completed",
         Some("cancelled" | "interrupted" | "aborted") => "interrupted",

@@ -4,6 +4,7 @@ mod catalog;
 mod command_admission;
 mod commands;
 pub mod config;
+mod history_proof;
 mod interactions;
 mod models;
 mod process;
