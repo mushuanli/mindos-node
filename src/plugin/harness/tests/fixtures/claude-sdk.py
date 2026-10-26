@@ -8,6 +8,7 @@ cwd=os.getcwd()
 directory=pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])/'projects'/''.join(c if c.isascii() and c.isalnum() else '-' for c in cwd)
 directory.mkdir(parents=True,exist_ok=True)
 pending=None
+deferred_user=None
 model=None
 effort=None
 
@@ -27,7 +28,10 @@ for line in sys.stdin:
   if request['subtype']=='set_model':model=request['model']
   if request['subtype']=='apply_flag_settings':effort=request['settings']['effortLevel']
   emit({'type':'control_response','response':{'subtype':'success','request_id':value['request_id'],'response':{'models':[{'value':'fixture-model','displayName':'Fixture model','supportsEffort':True,'supportedEffortLevels':['low','high']}], 'commands':[{'name':'compact','description':'Compact native history','argumentHint':'[focus]','aliases':['condense']}, {'name':'team:verify','description':'Verify this project','argumentHint':'[scope]','aliases':['verify']}]} if request['subtype']=='initialize' else {}}})
-  if request['subtype']=='interrupt':finish(True)
+  if request['subtype']=='interrupt':
+   if deferred_user is not None:
+    emit(deferred_user);deferred_user=None
+   finish(True)
  elif value['type']=='user':
   assert isinstance(value['message']['content'],list)
   text='\n'.join(p.get('text','') for p in value['message']['content'])
@@ -38,6 +42,8 @@ for line in sys.stdin:
    emit({'type':'system','subtype':'local_command','content':'Native state output'})
    finish();continue
   append({**value,'type':'user'})
+  if text=='late-admission':
+   deferred_user=value;continue
   emit(value)
   if text=='check-model-selection':assert model=='fixture-model' and effort=='high'
   if 'question' in text:

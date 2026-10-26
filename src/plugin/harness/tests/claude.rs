@@ -851,3 +851,126 @@ async fn rejects_foreign_records_inside_an_otherwise_authorized_transcript() {
     assert_ne!(resumed["outcome"], "committed");
     service.close().await;
 }
+
+async fn admitted_receipt(service: &Harnesses, id: &str) -> Value {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let value = call(
+                service,
+                "harness_operation",
+                json!({"epoch":"epoch","requestId":id}),
+            )
+            .await;
+            if value["outcome"] == "committed" {
+                return value;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Original receipt did not become committed")
+}
+
+async fn late_session(service: &Harnesses) -> Value {
+    mutate(
+        service,
+        "harness_create",
+        "late-create",
+        json!({"workspaceId":"workspace"}),
+    )
+    .await["result"]["session"]["id"]
+        .clone()
+}
+async fn interrupt_late(service: &Harnesses, id: &Value) -> Value {
+    let state =
+        call(service, "harness_session_info", json!({"sessionId":id})).await["session"].clone();
+    assert_eq!(state["status"], "active");
+    let control = mutate(
+        service,
+        "harness_interrupt",
+        "late-stop",
+        json!({"sessionId":id,"turnId":state["activeTurnId"]}),
+    )
+    .await;
+    assert_eq!(control["outcome"], "committed");
+    state["activeTurnId"].clone()
+}
+async fn assert_one_input(service: &Harnesses, id: &Value) {
+    let history = call(service, "harness_session_read", json!({"sessionId":id})).await;
+    let users = history["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|turn| turn["items"].as_array().unwrap())
+        .filter(|item| item["type"] == "userMessage")
+        .count();
+    assert_eq!(users, 1);
+}
+#[tokio::test]
+async fn late_native_admission_survives_the_reply_deadline_and_exact_interrupt() {
+    let root = tempfile::tempdir().unwrap();
+    let service = fixture(root.path());
+    let id = late_session(&service).await;
+    let original = mutate(
+        &service,
+        "harness_turn",
+        "late-turn",
+        json!({"sessionId":id,"prompt":"late-admission"}),
+    )
+    .await;
+    assert_eq!(original["outcome"], "unknown");
+    let turn = interrupt_late(&service, &id).await;
+    let receipt = admitted_receipt(&service, "late-turn").await;
+    assert_eq!(receipt["result"]["turnId"], turn);
+    idle(&service, &id).await;
+    assert_one_input(&service, &id).await;
+    let observed = call(
+        &service,
+        "harness_operation",
+        json!({"epoch":"epoch","requestId":"late-turn"}),
+    )
+    .await;
+    assert_eq!(observed, receipt);
+    service.close().await;
+}
+
+async fn await_active(service: &Harnesses, id: &Value) {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if call(service, "harness_session_info", json!({"sessionId":id})).await["session"]
+                ["status"]
+                == "active"
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Native turn did not start");
+}
+#[tokio::test]
+async fn stopping_the_native_process_releases_an_unacknowledged_worker_without_accepting_it() {
+    let root = tempfile::tempdir().unwrap();
+    let service = std::sync::Arc::new(fixture(root.path()));
+    let id = late_session(&service).await;
+    let worker = service.clone();
+    let input = id.clone();
+    let work = tokio::spawn(async move {
+        mutate(
+            &worker,
+            "harness_turn",
+            "unacknowledged-turn",
+            json!({"sessionId":input,"prompt":"late-admission"}),
+        )
+        .await
+    });
+    await_active(&service, &id).await;
+    service.close().await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), work)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["outcome"], "unknown");
+    assert!(result.get("result").is_none());
+}

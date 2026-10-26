@@ -288,7 +288,9 @@ impl Claude {
         }
         let result = async {
             self.select_model(&process, args).await?;
-            process.turn(&turn, content).await
+            process
+                .turn(&turn, content, args["requestId"].as_str())
+                .await
         }
         .await;
         if let (Err(error), Some(runtime)) = (&result, &self.runtime) {

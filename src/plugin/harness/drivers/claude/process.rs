@@ -198,9 +198,22 @@ impl Process {
         )
         .await
     }
-    pub async fn turn(&self, id: &str, content: Value) -> Result<Value, Error> {
+    pub async fn turn(
+        &self,
+        id: &str,
+        content: Value,
+        operation_id: Option<&str>,
+    ) -> Result<Value, Error> {
         let session = self.session.lock().unwrap()["id"].clone();
-        self.send(json!({"type":"user","uuid":id,"session_id":session,"message":{"role":"user","content":content},"parent_tool_use_id":null}),Some(id.into())).await
+        let started = std::time::Instant::now();
+        // The shared mutation worker owns admission until native acknowledgement or process exit.
+        // Its HTTP reply deadline must not discard the receiver for a later exact acknowledgement.
+        let result = async {
+            self.enqueue(json!({"type":"user","uuid":id,"session_id":session,"message":{"role":"user","content":content},"parent_tool_use_id":null}), Some(id.into()))
+                .await?.await.map_err(|_| Error::unavailable())?
+        }.await;
+        admission_diagnostic(operation_id, &session, id, &result, started);
+        result
     }
     pub async fn respond(&self, id: &str, response: Value) -> Result<Value, Error> {
         self.send(
@@ -210,6 +223,17 @@ impl Process {
         .await
     }
     async fn send(&self, message: Value, key: Option<String>) -> Result<Value, Error> {
+        let receive = self.enqueue(message, key).await?;
+        tokio::time::timeout(Duration::from_secs(25), receive)
+            .await
+            .map_err(|_| Error::timed_out())?
+            .map_err(|_| Error::unavailable())?
+    }
+    async fn enqueue(
+        &self,
+        message: Value,
+        key: Option<String>,
+    ) -> Result<oneshot::Receiver<Result<Value, Error>>, Error> {
         if !self.alive() {
             return Err(Error::unavailable());
         }
@@ -221,12 +245,30 @@ impl Process {
                 reply,
             })
             .map_err(|_| Error::unavailable())?;
-        tokio::time::timeout(Duration::from_secs(25), receive)
-            .await
-            .map_err(|_| Error::timed_out())?
-            .map_err(|_| Error::unavailable())?
+        Ok(receive)
     }
 }
+fn admission_diagnostic(
+    operation_id: Option<&str>,
+    session: &Value,
+    turn: &str,
+    result: &Result<Value, Error>,
+    started: std::time::Instant,
+) {
+    crate::core::events::emit(
+        if result.is_ok() {
+            crate::core::events::Level::Info
+        } else {
+            crate::core::events::Level::Warn
+        },
+        "harness.claude.admission",
+        json!({"operation":"harness.turn.admission","operationId":operation_id.filter(|id|crate::core::ids::is_identifier_within(id,128)),
+            "sessionId":session,"turnId":turn,"stage":"native_acknowledgement",
+            "outcome":if result.is_ok(){"accepted"}else{"unknown"},"code":result.as_ref().err().map(|error|error.code),
+            "durationMs":started.elapsed().as_millis()}),
+    );
+}
+
 fn arguments(id: &str, resume: Option<&str>) -> Vec<String> {
     let mut args = [
         "--print",

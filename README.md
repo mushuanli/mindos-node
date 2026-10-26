@@ -361,7 +361,7 @@ home = "/srv/mindos-node/claude-home"
 projects = true
 ```
 
-真实验收版本为 Claude Code 2.1.209。控制使用 [Agent SDK 流式输入](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode) 的 stream-json、initialize/control_request/control_response；每个受控会话独立子进程，最多 16 个。新建、恢复、文本/图片附件、中断、工具审批及 AskUserQuestion 转换为统一 harness 接口。使用 manual 权限模式和 stdio 审批通道；不跳过审批。turn 只有收到相同原生 user UUID 的 replay 确认才提交回执；超时或断线结果未知，不自动重发。客户端关闭只释放观察，不中断远端 turn；服务端关闭回收进程组和审批请求。
+真实验收版本为 Claude Code 2.1.209。控制使用 [Agent SDK 流式输入](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode) 的 stream-json、initialize/control_request/control_response；每个受控会话独立子进程，最多 16 个。新建、恢复、文本/图片附件、中断、工具审批及 AskUserQuestion 转换为统一 harness 接口。使用 manual 权限模式和 stdio 审批通道；不跳过审批。turn 收到相同原生 user UUID 的 replay，或受控当前 turn 的原生 result 后确认回执；超时或断线结果未知，不自动重发。0.4.3 将 HTTP 的 25 秒观察预算与后台原生确认的生命周期分开：turn 的回执接收器持续归原共享 mutation worker 所有，迟到的确认仍能持久写入同一 requestId；独立 operation 查询可读取该事实。控制和管道写入仍有有界等待，取消不等待原提交回执，进程退出会释放等待并保留 unknown；不以管道写入、active 或助手块冒充原生接纳。诊断记录原操作、Session/turn、阶段、错误类别与耗时，不记录正文或凭据。客户端关闭只释放观察，不中断远端 turn；服务端关闭回收进程组和审批请求。
 
 历史只读解析私有 home 的 `projects/*/*.jsonl`，按实际 cwd 核验项目归属，拒绝链接和越界，不修改原生索引。目录列表检查最多 2048 个目录名称、8192 个文件、16 MiB 元信息及 5 秒；历史每次读取 8 MiB 窗口，返回最多 100 项/2 MiB。真实用户 UUID 定义轮次，多条 assistant 消息保留该身份；工具只返回摘要。恢复使用[原生日志绝对路径](https://code.claude.com/docs/en/sessions)，兼容宿主 cwd 与项目沙箱虚拟 cwd 的差异；恢复前核验整份日志的身份及 cwd，日志上限 16 MiB，超限明确失败；历史读取与恢复验证共用 4 个 blocking 工作槽。搜索共用 100 条/16 MiB/15 秒预算及每会话 64 页上限。
 
