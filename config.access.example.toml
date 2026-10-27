@@ -41,7 +41,7 @@ access = "ro"
 execute = true
 
 [projects]
-root = "/srv/mindos-node-private/projects"
+root = "/srv/nestos-node-private/projects"
 network = true
 
 # Each principal uses their own native home, outside all exported directories.
@@ -50,11 +50,11 @@ id = "alice-codex"
 kind = "codex"
 principal_id = "alice"
 projects = true
-home = "/srv/mindos-node-private/alice/codex"
+home = "/srv/nestos-node-private/alice/codex"
 
 [[harnesses]]
 id = "bob-codex"
 kind = "codex"
 principal_id = "bob"
 projects = true
-home = "/srv/mindos-node-private/bob/codex"
+home = "/srv/nestos-node-private/bob/codex"

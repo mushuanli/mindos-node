@@ -1,4 +1,4 @@
-use mindos_node::{app::State, config::Config};
+use nestos_node::{app::State, config::Config};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 // Credential resolution reads the process environment, so the tests serialize.
@@ -49,7 +49,7 @@ fn read_write_access_implies_exclusive_writes() {
     .unwrap();
     assert!(state.auth.clients()[0].may_write("x1"));
     assert!(state.exports.get("x1").unwrap().writable());
-    assert!(mindos_node::fs::Export::exclusive(std::path::Path::new(&path)).is_err());
+    assert!(nestos_node::fs::Export::exclusive(std::path::Path::new(&path)).is_err());
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn startup_initializes_a_missing_sync_root() {
     .unwrap();
     let sync = state
         .services
-        .get::<mindos_node::sync::SyncService>()
+        .get::<nestos_node::sync::SyncService>()
         .expect("sync must be served");
     assert!(store.join("storage.json").exists());
     assert!(store.join("metadata.db").exists());

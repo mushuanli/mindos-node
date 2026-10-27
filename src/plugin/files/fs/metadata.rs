@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-const DIRECTORY: &str = ".mindos";
+const DIRECTORY: &str = ".nestos";
 const DATABASE: &str = "meta.sqlite";
 const APPLICATION_ID: i64 = 0x4d444d54;
 
@@ -19,8 +19,9 @@ pub(crate) struct Metadata {
 }
 impl Metadata {
     pub fn open(root: &File, write: bool) -> Result<Option<Self>, Error> {
+        let directory_name = metadata_directory(root)?;
         if write {
-            match rustix::fs::mkdirat(root, DIRECTORY, Mode::from_bits_truncate(0o700)) {
+            match rustix::fs::mkdirat(root, directory_name, Mode::from_bits_truncate(0o700)) {
                 Ok(()) => root.sync_all()?,
                 Err(rustix::io::Errno::EXIST) => (),
                 Err(error) => return Err(error.into()),
@@ -28,7 +29,7 @@ impl Metadata {
         }
         let directory = match rustix::fs::openat(
             root,
-            DIRECTORY,
+            directory_name,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         ) {
@@ -198,4 +199,21 @@ impl Metadata {
 }
 fn sql(_: rusqlite::Error) -> Error {
     Error::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "METADATA_IO")
+}
+
+// Continue an existing export's metadata store; never silently create a second identity namespace.
+fn metadata_directory(root: &File) -> Result<&'static str, Error> {
+    let mut found = None;
+    for name in [DIRECTORY, ".mindos"] {
+        match rustix::fs::openat(root, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()) {
+            Ok(fd) => {
+                drop(fd);
+                if found.is_some() { return Err(Error::forbidden("METADATA_NAMESPACE_CONFLICT")); }
+                found = Some(name);
+            }
+            Err(rustix::io::Errno::NOENT) => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(found.unwrap_or(DIRECTORY))
 }

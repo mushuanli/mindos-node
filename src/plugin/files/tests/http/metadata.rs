@@ -1,6 +1,6 @@
 use crate::common::{app_export, body_json, mutate_request, request};
 use axum::{body::Body, http::StatusCode};
-use mindos_node::fs::Export;
+use nestos_node::fs::Export;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -40,7 +40,7 @@ async fn metadata_uses_authenticated_mutations_and_normal_stat_reads() {
         .clone()
         .oneshot(mutate_request(
             "private",
-            &json!({"action":"metadata","path":".mindos/meta.sqlite","metadata":{}}).to_string(),
+            &json!({"action":"metadata","path":".nestos/meta.sqlite","metadata":{}}).to_string(),
         ))
         .await
         .unwrap();

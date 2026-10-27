@@ -1,4 +1,4 @@
-//! `mindos-node` — an authenticated HTTP file service with optional remote command
+//! `nestos-node` — an authenticated HTTP file service with optional remote command
 //! execution.
 //!
 //! # Layout

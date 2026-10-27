@@ -1,10 +1,10 @@
 [package]
-name = "mindos-node"
+name = "nestos-node"
 version = "0.4.3"
 edition = "2021"
-description = "MindOS personal intelligence node for controlled files, projects, sync and AI harness sessions"
-repository = "https://github.com/mushuanli/mindos-node"
-homepage = "https://github.com/mushuanli/mindos-node"
+description = "NestOS personal intelligence node for controlled files, projects, sync and AI harness sessions"
+repository = "https://github.com/mushuanli/nestos-node"
+homepage = "https://github.com/mushuanli/nestos-node"
 readme = "README.md"
 
 [dependencies]

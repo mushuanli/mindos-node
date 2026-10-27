@@ -60,7 +60,7 @@ pub(super) fn authorize<'a>(
 }
 pub(super) fn allowed(project: &Project, path: &str) -> Result<(), Error> {
     crate::fs::path::validate(path)?;
-    if path.split('/').any(|p| p == ".mindos") {
+    if path.split('/').any(|p| p == ".nestos" || p == ".mindos") {
         return Err(Error::forbidden("SYNC_CONTROL_PATH"));
     }
     for mount in &project.mounts {

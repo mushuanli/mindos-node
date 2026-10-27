@@ -1,7 +1,7 @@
 //! Export-level behaviour that does not need HTTP: capability opening, restart
 //! recovery and revision retirement.
 
-use mindos_node::fs::{Export, Exports};
+use nestos_node::fs::{Export, Exports};
 
 #[test]
 fn exclusive_open_holds_the_lock_and_a_second_open_fails() {
@@ -86,7 +86,7 @@ fn the_registry_lists_aliases_and_can_invalidate_all_revisions() {
 
 #[test]
 fn file_metadata_is_lazy_remote_durable_and_mount_independent() {
-    use mindos_node::fs::mutation::Change;
+    use nestos_node::fs::mutation::Change;
     use serde_json::json;
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join("nested")).unwrap();
@@ -96,7 +96,7 @@ fn file_metadata_is_lazy_remote_durable_and_mount_independent() {
     export
         .list("", &tokio_util::sync::CancellationToken::new())
         .unwrap();
-    assert!(!root.path().join(".mindos").exists());
+    assert!(!root.path().join(".nestos").exists());
     export
         .apply(
             &Change::Metadata {
@@ -110,7 +110,7 @@ fn file_metadata_is_lazy_remote_durable_and_mount_independent() {
             || Ok(()),
         )
         .unwrap();
-    assert!(root.path().join(".mindos/meta.sqlite").is_file());
+    assert!(root.path().join(".nestos/meta.sqlite").is_file());
     let stat = export.stat("nested/note.md").unwrap().unwrap();
     assert_eq!(stat.revision, before);
     let identity = stat.source_identity.clone();
@@ -131,7 +131,7 @@ fn file_metadata_is_lazy_remote_durable_and_mount_independent() {
             || Ok(())
         )
         .is_err());
-    assert!(export.stat(".mindos/meta.sqlite").is_err());
+    assert!(export.stat(".nestos/meta.sqlite").is_err());
     assert_eq!(
         export
             .list("", &tokio_util::sync::CancellationToken::new())

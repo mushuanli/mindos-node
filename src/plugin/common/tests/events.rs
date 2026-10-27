@@ -6,7 +6,7 @@ use axum::{
 };
 use futures_util::stream;
 use http_body_util::BodyExt;
-use mindos_node::{
+use nestos_node::{
     app::{Application, State},
     auth::{Auth, Client},
     fs::Exports,
@@ -24,7 +24,7 @@ impl NodePlugin for Feature {
     fn subscribe<'a>(&'a self, _: &'a Arc<State>, identity: usize, args: Value) -> EventFuture<'a> {
         Box::pin(async move {
             if args["owner"] != identity {
-                return Err(mindos_node::core::error::Error::forbidden("EACCES"));
+                return Err(nestos_node::core::error::Error::forbidden("EACCES"));
             }
             let changes = self.0.subscribe();
             Ok(Box::pin(stream::unfold(

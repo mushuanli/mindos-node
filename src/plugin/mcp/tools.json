@@ -11,14 +11,14 @@
       "required": [],
       "type": "object"
     },
-    "name": "mindos_node_capabilities"
+    "name": "nestos_node_capabilities"
   },
   {
     "annotations": {
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Compatibility alias for mindos_node_capabilities",
+    "description": "Compatibility alias for nestos_node_capabilities",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -32,7 +32,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Compatibility alias for mindos_node_capabilities",
+    "description": "Compatibility alias for nestos_node_capabilities",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},

@@ -1,6 +1,6 @@
 #[path = "support/mod.rs"]
 mod common;
-use mindos_node::{
+use nestos_node::{
     app::State,
     config::Config,
     fs::Export,

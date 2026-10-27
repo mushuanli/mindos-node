@@ -68,7 +68,7 @@ pub fn emit(level: Level, event: &str, fields: Value) {
             if let Err(error) = log.write_line(&line) {
                 let _ = writeln!(
                     std::io::stderr().lock(),
-                    "mindos-node log file unavailable: {error}; continuing with stderr"
+                    "nestos-node log file unavailable: {error}; continuing with stderr"
                 );
                 *sink = None;
             }

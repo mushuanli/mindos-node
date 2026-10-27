@@ -8,7 +8,7 @@ mod event_support;
 mod fixture;
 #[path = "dsh_preparation.rs"]
 mod preparation;
-use mindos_node::{config::Config, harness::Harnesses};
+use nestos_node::{config::Config, harness::Harnesses};
 use serde_json::{json, Value};
 
 #[tokio::test]
@@ -84,7 +84,7 @@ path={root:?}
     ))
     .unwrap();
     Harnesses::new(
-        mindos_node::harness::config::validate(&config).unwrap(),
+        nestos_node::harness::config::validate(&config).unwrap(),
         "epoch".into(),
     )
     .unwrap()
@@ -492,7 +492,7 @@ url="http://127.0.0.1:3080/"
 "#
     ))
     .unwrap();
-    assert!(mindos_node::harness::config::validate(&config)
+    assert!(nestos_node::harness::config::validate(&config)
         .err()
         .unwrap()
         .contains("projects = false"));

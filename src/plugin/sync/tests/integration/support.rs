@@ -1,6 +1,6 @@
 use axum::{body::Body, http::Request, Router};
 use http_body_util::BodyExt;
-use mindos_node::{
+use nestos_node::{
     app::State,
     sync::{Config, SyncService},
 };
