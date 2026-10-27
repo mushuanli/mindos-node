@@ -7,5 +7,6 @@ mod auth;
 mod capabilities;
 mod content;
 mod listing;
+mod metadata;
 mod mutations;
 mod seq;

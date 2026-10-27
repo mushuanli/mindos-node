@@ -36,7 +36,7 @@ pub fn validate(path: &str) -> Result<(), Error> {
 
 /// Names the service reserves for staging and never exposes to clients.
 pub fn is_reserved(name: &str) -> bool {
-    name.starts_with(RESERVED_PREFIX)
+    name == ".mindos" || name.starts_with(RESERVED_PREFIX)
 }
 
 /// `C:/host` is a platform absolute path, not an export-relative name.

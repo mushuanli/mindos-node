@@ -2,6 +2,8 @@ use serde::Deserialize;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportConfig {
+    /// Stable project/export root. The first metadata write creates .mindos/meta.sqlite here.
+    /// Subdirectory client mounts share this source-owned database; include it in backups.
     pub path: String,
     /// Client-visible prefix; defaults to the final path component.
     pub alias: Option<String>,

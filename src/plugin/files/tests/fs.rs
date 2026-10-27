@@ -83,3 +83,120 @@ fn the_registry_lists_aliases_and_can_invalidate_all_revisions() {
         .unwrap();
     assert_ne!(before.revision, after.revision);
 }
+
+#[test]
+fn file_metadata_is_lazy_remote_durable_and_mount_independent() {
+    use mindos_node::fs::mutation::Change;
+    use serde_json::json;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("nested")).unwrap();
+    std::fs::write(root.path().join("nested/note.md"), "Original").unwrap();
+    let export = Export::exclusive(root.path()).unwrap();
+    let before = export.stat("nested/note.md").unwrap().unwrap().revision;
+    export
+        .list("", &tokio_util::sync::CancellationToken::new())
+        .unwrap();
+    assert!(!root.path().join(".mindos").exists());
+    export
+        .apply(
+            &Change::Metadata {
+                path: "nested/note.md".into(),
+                patch: json!({"a":1,"nested":{"id":"anchor"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                remove: vec![],
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    assert!(root.path().join(".mindos/meta.sqlite").is_file());
+    let stat = export.stat("nested/note.md").unwrap().unwrap();
+    assert_eq!(stat.revision, before);
+    let identity = stat.source_identity.clone();
+    assert!(identity.is_some());
+    assert_eq!(stat.metadata["a"], 1);
+    let other = Export::open(root.path()).unwrap();
+    assert_eq!(
+        other.stat("nested/note.md").unwrap().unwrap().metadata["nested"]["id"],
+        "anchor"
+    );
+    assert!(other
+        .apply(
+            &Change::Metadata {
+                path: "nested/note.md".into(),
+                patch: json!({"a":2}).as_object().unwrap().clone(),
+                remove: vec![]
+            },
+            || Ok(())
+        )
+        .is_err());
+    assert!(export.stat(".mindos/meta.sqlite").is_err());
+    assert_eq!(
+        export
+            .list("", &tokio_util::sync::CancellationToken::new())
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+    export
+        .apply(
+            &Change::Rename {
+                path: "nested".into(),
+                to: "moved".into(),
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(
+        other.stat("moved/note.md").unwrap().unwrap().metadata["a"],
+        1
+    );
+    export
+        .apply(
+            &Change::Metadata {
+                path: "moved/note.md".into(),
+                patch: json!({"b":true}).as_object().unwrap().clone(),
+                remove: vec!["a".into()],
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    assert!(!other
+        .stat("moved/note.md")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .contains_key("a"));
+    drop(other);
+    drop(export);
+    let reopened = Export::exclusive(root.path()).unwrap();
+    assert_eq!(
+        reopened
+            .stat("moved/note.md")
+            .unwrap()
+            .unwrap()
+            .source_identity,
+        identity
+    );
+    assert_eq!(
+        reopened.stat("moved/note.md").unwrap().unwrap().metadata["b"],
+        true
+    );
+    reopened
+        .apply(
+            &Change::Remove {
+                path: "moved/note.md".into(),
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    std::fs::write(root.path().join("moved/note.md"), "New").unwrap();
+    assert!(reopened
+        .stat("moved/note.md")
+        .unwrap()
+        .unwrap()
+        .metadata
+        .is_empty());
+}

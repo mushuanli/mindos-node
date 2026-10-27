@@ -33,6 +33,7 @@ fn export(state: &State, client: &Client, alias: &str) -> Value {
     value.as_object_mut().unwrap().remove("at");
     value["nameSemantics"] = json!("source");
     value["strongRevision"] = json!(writable);
+    value["metadata"] = json!(true);
     value["authorization"] = client.authorization();
     value
 }

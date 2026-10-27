@@ -86,7 +86,7 @@ impl Operation {
             ),
             Err(error) => Receipt(
                 error.status,
-                json!({"outcome":"not-committed", "code":error.code}),
+                json!({"outcome":error.outcome.unwrap_or("not-committed"), "code":error.code}),
             ),
         };
         *self.lock() = Some(receipt);

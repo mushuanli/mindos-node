@@ -43,6 +43,25 @@ access = "rw"                        # 默认 ro；rw 自动加独占锁
 
 已有项目可通过 `project_remount(projectId, revision, access)` 修改根权限，保留 ID、目录和原生会话。权限变更校验导出授权、原目录身份和版本，拒绝在途执行；提交后关闭旧项目 harness 与 watcher，使旧 revision 失效。读写根仍受额外挂载各自的授权限制，不修改导出配置。响应丢失时先读取项目核对结果。
 
+### 文件 metadata 与目录挂载
+
+每个 export 根对应一个 metadata 存储边界。首次通过 VFS 写入自定义 metadata 时，远程节点在
+`<export-root>/.mindos/meta.sqlite` 创建 SQLite；普通文件读取、stat、列表和未使用 metadata 的目录不创建它。
+`ro` 可以读取已有 metadata，但不能写入或创建数据库；`rw` 仍必须同时通过 export、认证身份与项目挂载授权。
+这项能力不需要新增 TOML 开关，也不是只针对 AI Chat 的私有存储。
+
+数据库 key 使用 **export 根内的规范来源相对路径**。例如实际文件 `/srv/work/docs/a.md`、export 根 `/srv/work`，
+key 始终是 `docs/a.md`；客户端挂载 `/srv/work` 或其 `docs` 子目录、使用不同挂载别名，不会改变这个 key。
+服务器先做项目路径授权及防穿越校验，再访问同一份远程 metadata，不能提交绝对宿主路径或跨项目查询。
+通过节点执行的重命名/移动会维护子树的 metadata 路径，删除清理对应记录；正文替换保留同路径 metadata。
+如果文件操作已完成但 metadata 维护失败，回执明确标记 `partial`；请核对远程实际路径和 metadata 后修复，不要把它当作“未发生”重发。
+metadata 修改不会改变正文 revision，也不会使原本合法的正文条件保存失效。
+
+`.mindos` 是保留目录，不经文件 API、列表或普通同步暴露；不能通过公开文件 API编辑其中的 SQLite。
+迁移或备份项目时请同时保留 `.mindos`，不要当作临时缓存删除；停服务后一起复制，或使用 SQLite 的一致性备份方式。
+仅复制正文不会迁移 AI 关联等自定义 metadata。不要为了同一棵目录的不同挂载层级重复配置重叠 export，
+也不要手工编辑数据库或删除其 journal 文件。旧节点不声明 metadata 能力时，客户端明确拒绝写入，不在本地另存替代记录。
+
 `exclusive` 要求所有修改经本服务完成；目录上的 advisory lock 阻止合作的同根实例，不能阻止编辑器、Git 或其他外部程序。配置内拒绝重叠根与重复别名；不同实例的父子导出根仍需部署侧禁止。共享修改目录使用 `ro`。服务支持 HTTP；公网部署在 TLS 反向代理之后。Origin 白名单只解决浏览器访问，不代替身份认证。用户名/密码使用 UTF-8 HTTP Basic，密码至少 8 字节：用户名取 `username`，未写时读环境变量 `FS_SERVER_USER`；密码取内联 `password` 或 `password_env` 指向的环境变量。Basic 凭据不加密，非可信本机网络应使用 HTTPS。推荐 `api_key` 或 `api_key_env`（至少 24 字节、不设置 `username`），使用 Bearer 认证；旧名称 `token`/`token_env` 仍兼容，但不能和对应新名称同时配置。API Key 与密码认证互斥；同时设置 `username` 与 `token`/`token_env` 会启动失败，避免看起来是 Basic 实际只收 Bearer。内联 secret 写在服务端配置文件中。API Key 按启动连接提示输出到 console，不放入结构化事件或 HTTP 响应；旧 Basic 密码不输出。
 
 在“工具箱 → MCP”新增 HTTP 配置，填写完整 MCP 地址（例如 `http://127.0.0.1:8787/mcp`），将服务启动时输出的 API Key 填入同名字段并测试连接。通用发现响应已携带 mindos-node 能力描述；应用扩展验证后启用项目绑定，不需要额外用户名、密码或勾选框。旧服务器使用其已声明的能力工具。测试后的保存和改名复用验证结果，普通 MCP 不发 mindos-node 专用探测。只有验证成功的 mindos-node 配置可以用于目录绑定，普通 MCP 即使同名也不能绑定。可配置多条连接；工作台新建远程项目选择 MCP 配置和 `/alias/path`。项目展示“服务器名:项目名”，同一服务器、账号与规范化路径复用已有项目，改名不移动目录。

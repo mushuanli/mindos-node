@@ -9,6 +9,7 @@
 //! This module never sees an HTTP type beyond the status attached to an error.
 
 pub mod export;
+mod metadata;
 pub mod model;
 pub mod mutation;
 pub mod path;

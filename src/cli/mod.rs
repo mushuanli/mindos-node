@@ -5,7 +5,7 @@ pub fn plugins(args: &[String]) -> Result<(), String> {
     plugins::run(args)
 }
 
-pub const HELP: &str = "mindos-node [CONFIG]\nmindos-node --version\nmindos-node access --help\nmindos-node plugins check CONFIG [PLUGIN]\nmindos-node sync <init|verify|gc|backup|restore|repair> CONFIG [arguments]\n\nWithout a subcommand, start the configured server. access edits local configuration; restart to apply.";
+pub const HELP: &str = "mindos-node [CONFIG]\nmindos-node --version\nmindos-node access --help\nmindos-node plugins check CONFIG [PLUGIN]\nmindos-node sync <init|verify|gc|backup|restore|repair> CONFIG [arguments]\n\nWithout a subcommand, start the configured server. access edits local configuration; restart to apply.\n\nExport metadata: the first metadata write creates <export-root>/.mindos/meta.sqlite on this node. Read-only access never creates or changes it. Subdirectory mounts share source-relative keys. Keep .mindos with the export when backing up or moving it; do not delete it as a cache.";
 
 pub fn access(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|s| s == "--help" || s == "-h") {

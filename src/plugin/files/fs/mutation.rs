@@ -20,9 +20,21 @@ const DIRECTORY_MODE: Mode = Mode::RUSR
 /// One validated structural change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
-    Mkdir { path: String },
-    Rename { path: String, to: String },
-    Remove { path: String },
+    Mkdir {
+        path: String,
+    },
+    Rename {
+        path: String,
+        to: String,
+    },
+    Remove {
+        path: String,
+    },
+    Metadata {
+        path: String,
+        patch: serde_json::Map<String, serde_json::Value>,
+        remove: Vec<String>,
+    },
 }
 
 impl Change {
@@ -44,7 +56,10 @@ impl Change {
     /// The entry the change applies to.
     pub fn path(&self) -> &str {
         match self {
-            Self::Mkdir { path } | Self::Rename { path, .. } | Self::Remove { path } => path,
+            Self::Mkdir { path }
+            | Self::Rename { path, .. }
+            | Self::Remove { path }
+            | Self::Metadata { path, .. } => path,
         }
     }
 }
@@ -63,6 +78,15 @@ impl Export {
             .lock_revisions()
             .ok_or_else(|| Error::forbidden("EROFS"))?;
         checkpoint()?;
+        let _metadata = self
+            .metadata_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut metadata = if matches!(change, Change::Rename { .. } | Change::Remove { .. }) {
+            super::metadata::Metadata::existing_write(&self.root)?
+        } else {
+            None
+        };
         match change {
             Change::Mkdir { path } => {
                 let (directory, name) = self.parent(path)?;
@@ -78,6 +102,12 @@ impl Export {
                     destination_name.as_str(),
                     RenameFlags::NOREPLACE,
                 )?;
+                if let Some(metadata) = metadata.as_mut() {
+                    metadata.rename(path, to).map_err(|_| {
+                        revisions.invalidate();
+                        Error::partial("FILE_METADATA_MAINTENANCE_FAILED")
+                    })?;
+                }
             }
             Change::Remove { path } => {
                 let (directory, name) = self.parent(path)?;
@@ -88,9 +118,29 @@ impl Export {
                     AtFlags::empty()
                 };
                 rustix::fs::unlinkat(&directory, name.as_str(), flags)?;
+                if let Some(metadata) = metadata.as_ref() {
+                    metadata.remove(path).map_err(|_| {
+                        revisions.invalidate();
+                        Error::partial("FILE_METADATA_MAINTENANCE_FAILED")
+                    })?;
+                }
+            }
+            Change::Metadata {
+                path,
+                patch,
+                remove,
+            } => {
+                self.open_path(path, OFlags::PATH)?;
+                if !patch.is_empty() || !remove.is_empty() {
+                    let mut metadata = super::metadata::Metadata::open(&self.root, true)?
+                        .ok_or_else(Error::internal)?;
+                    metadata.patch(path, patch, remove)?;
+                }
             }
         }
-        revisions.invalidate();
+        if !matches!(change, Change::Metadata { .. }) {
+            revisions.invalidate();
+        }
         Ok(())
     }
 }

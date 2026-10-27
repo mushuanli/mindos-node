@@ -21,6 +21,10 @@ pub struct Stat {
     /// Present only for writable exports; absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    pub metadata: serde_json::Map<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_identity: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -48,6 +52,8 @@ pub(crate) fn attributes(file: &std::fs::File) -> Result<Stat, Error> {
         modified_at: millis(metadata.modified()),
         created_at: millis(metadata.created()),
         revision: None,
+        metadata: serde_json::Map::new(),
+        source_identity: None,
     })
 }
 

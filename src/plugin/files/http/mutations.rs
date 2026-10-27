@@ -182,6 +182,9 @@ pub struct Command {
     to: Option<String>,
     #[serde(default)]
     recursive: bool,
+    metadata: Option<serde_json::Map<String, Value>>,
+    #[serde(default, rename = "removeKeys")]
+    remove_keys: Vec<String>,
 }
 
 pub async fn mutate(
@@ -200,7 +203,29 @@ pub async fn mutate(
     if let Some(to) = &command.to {
         let _project_guard = access::authorize_path(&state, &headers, &alias, to, true, false)?;
     }
-    let change = Change::parse(&command.action, command.path, command.to)?;
+    let change = if command.action == "metadata" {
+        path::validate(&command.path)?;
+        let patch = command.metadata.ok_or_else(Error::invalid)?;
+        if command.to.is_some()
+            || command.remove_keys.len() > 1024
+            || serde_json::to_vec(&patch)
+                .map_err(|_| Error::invalid())?
+                .len()
+                > 256 * 1024
+        {
+            return Err(Error::invalid());
+        }
+        Change::Metadata {
+            path: command.path,
+            patch,
+            remove: command.remove_keys,
+        }
+    } else {
+        if command.metadata.is_some() || !command.remove_keys.is_empty() {
+            return Err(Error::invalid());
+        }
+        Change::parse(&command.action, command.path, command.to)?
+    };
     let gate = state.files.shared()?;
     let (identity, export) = access::writable_export(&state, &headers, &alias)?;
     let operation = state
@@ -248,7 +273,7 @@ fn mutation_finished(operation: Value, result: &Result<Value, Error>) {
         },
         "mutation.finished",
         json!({"operation": operation,
-        "outcome": if result.is_ok() { "committed" } else { "not-committed" },
+        "outcome": result.as_ref().err().and_then(|error| error.outcome).unwrap_or(if result.is_ok() {"committed"} else {"not-committed"}),
         "code": result.as_ref().err().map(|error| error.code)}),
     );
 }

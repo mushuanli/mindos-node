@@ -17,11 +17,24 @@ use serde_json::json;
 pub struct Error {
     pub status: StatusCode,
     pub code: &'static str,
+    pub outcome: Option<&'static str>,
 }
 
 impl Error {
     pub const fn new(status: StatusCode, code: &'static str) -> Self {
-        Self { status, code }
+        Self {
+            status,
+            code,
+            outcome: None,
+        }
+    }
+
+    pub const fn partial(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code,
+            outcome: Some("partial"),
+        }
     }
 
     /// Input that is syntactically wrong (bad path, bad header, bad action).
@@ -112,7 +125,11 @@ impl Error {
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({ "code": self.code }))).into_response()
+        let mut body = json!({"code": self.code});
+        if let Some(outcome) = self.outcome {
+            body["outcome"] = json!(outcome);
+        }
+        (self.status, Json(body)).into_response()
     }
 }
 

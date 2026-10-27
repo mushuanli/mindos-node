@@ -27,7 +27,8 @@ use tokio_util::sync::CancellationToken;
 const DIRECTORY_LIMIT: usize = 100_000;
 
 pub struct Export {
-    root: File,
+    pub(crate) root: File,
+    pub(crate) metadata_gate: Mutex<()>,
     revisions: Option<Mutex<Revisions>>,
     pub(crate) upload_journal: Option<Arc<super::upload_journal::UploadJournal>>,
 }
@@ -41,6 +42,7 @@ impl Export {
         }
         let export = Self {
             root,
+            metadata_gate: Mutex::new(()),
             revisions: None,
             upload_journal: None,
         };
@@ -93,6 +95,14 @@ impl Export {
             Ok(file) => {
                 let mut stat = attributes(&file)?;
                 stat.revision = revisions.as_mut().map(|r| r.get(&file)).transpose()?;
+                let _metadata = self
+                    .metadata_gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Some(store) = super::metadata::Metadata::open(&self.root, false)? {
+                    stat.metadata = store.read(path)?;
+                    stat.source_identity = store.identity(path)?;
+                }
                 Ok(Some(stat))
             }
             Err(error) if error.is_not_found() => Ok(None),
