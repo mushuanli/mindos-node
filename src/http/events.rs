@@ -15,7 +15,7 @@ pub async fn failures(request: Request, next: Next) -> Response {
             },
             "http.failed",
             serde_json::json!({"method": method, "path": path,
-            "status": response.status().as_u16(), "elapsedMs": started.elapsed().as_millis()}),
+            "status": response.status().as_u16(), "code": response.extensions().get::<crate::core::error::Error>().map(|error| error.code), "elapsedMs": started.elapsed().as_millis()}),
         );
     }
     response

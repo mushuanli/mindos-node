@@ -129,7 +129,9 @@ impl IntoResponse for Error {
         if let Some(outcome) = self.outcome {
             body["outcome"] = json!(outcome);
         }
-        (self.status, Json(body)).into_response()
+        let mut response = (self.status, Json(body)).into_response();
+        response.extensions_mut().insert(self);
+        response
     }
 }
 

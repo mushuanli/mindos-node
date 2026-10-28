@@ -45,6 +45,8 @@ access = "rw"                        # 默认 ro；rw 自动加独占锁
 
 ### 文件 metadata 与目录挂载
 
+旧 version-1 元数据库可能没有 `identity` 列。读取时兼容该布局且不改库；首次 metadata 写入在事务中补列并分配稳定身份，保留原有 metadata。迁移记录 `metadata.schema.upgraded`，SQLite 失败记录 `metadata.database.failed` 的安全错误类别，不记录正文。
+
 每个 export 根对应一个 metadata 存储边界。首次通过 VFS 写入自定义 metadata 时，远程节点在
 `<export-root>/.nestos/meta.sqlite` 创建 SQLite；普通文件读取、stat、列表和未使用 metadata 的目录不创建它。
 `ro` 可以读取已有 metadata，但不能写入或创建数据库；`rw` 仍必须同时通过 export、认证身份与项目挂载授权。

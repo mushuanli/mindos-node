@@ -16,6 +16,7 @@ const APPLICATION_ID: i64 = 0x4d444d54;
 pub(crate) struct Metadata {
     database: Connection,
     _directory: File,
+    has_identity: bool,
 }
 impl Metadata {
     pub fn open(root: &File, write: bool) -> Result<Option<Self>, Error> {
@@ -107,7 +108,9 @@ impl Metadata {
         } else if application != APPLICATION_ID || version != 1 {
             return Err(Error::conflict("METADATA_VERSION"));
         }
+        let has_identity = prepare_identity(&database, write)?;
         Ok(Some(Self {
+            has_identity,
             database,
             _directory: directory,
         }))
@@ -119,6 +122,7 @@ impl Metadata {
         Self::open(root, true)
     }
     pub fn identity(&self, path: &str) -> Result<Option<String>, Error> {
+        if !self.has_identity { return Ok(None); }
         self.database
             .query_row(
                 "SELECT identity FROM file_metadata WHERE path=?1",
@@ -174,7 +178,7 @@ impl Metadata {
         if data.len() > 512 * 1024 {
             return Err(Error::too_large("METADATA_LIMIT"));
         }
-        transaction.execute("INSERT INTO file_metadata(path,data) VALUES(?1,?2) ON CONFLICT(path) DO UPDATE SET data=excluded.data", params![path,data]).map_err(sql)?;
+        transaction.execute("INSERT INTO file_metadata(path,data,identity) VALUES(?1,?2,lower(hex(randomblob(16)))) ON CONFLICT(path) DO UPDATE SET data=excluded.data", params![path,data]).map_err(sql)?;
         transaction.commit().map_err(sql)
     }
     pub fn remove(&self, path: &str) -> Result<(), Error> {
@@ -197,7 +201,26 @@ impl Metadata {
         tx.commit().map_err(sql)
     }
 }
-fn sql(_: rusqlite::Error) -> Error {
+// Legacy version-1 stores predate identity. Reads remain read-only; writes upgrade atomically.
+fn prepare_identity(database: &Connection, write: bool) -> Result<bool, Error> {
+    let has_identity: bool = database.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('file_metadata') WHERE name='identity')",
+        [], |row| row.get(0),
+    ).map_err(sql)?;
+    if has_identity || !write { return Ok(has_identity); }
+    let started = std::time::Instant::now();
+    database.execute_batch("BEGIN IMMEDIATE; ALTER TABLE file_metadata ADD COLUMN identity TEXT; UPDATE file_metadata SET identity=lower(hex(randomblob(16))); COMMIT;").map_err(sql)?;
+    crate::core::events::emit(crate::core::events::Level::Info, "metadata.schema.upgraded",
+        serde_json::json!({"stage":"identity-column","result":"success","elapsedMs":started.elapsed().as_millis()}));
+    Ok(true)
+}
+fn sql(error: rusqlite::Error) -> Error {
+    let category = match &error {
+        rusqlite::Error::SqliteFailure(code, _) => format!("{:?}", code.code),
+        _ => "SQLITE_RESULT_INVALID".to_owned(),
+    };
+    crate::core::events::emit(crate::core::events::Level::Error, "metadata.database.failed",
+        serde_json::json!({"code":"METADATA_IO","category":category}));
     Error::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "METADATA_IO")
 }
 
