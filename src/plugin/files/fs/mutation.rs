@@ -82,8 +82,16 @@ impl Export {
             .metadata_gate
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let (metadata_root, metadata_path) = self.metadata_scope(change.path())?;
+        let metadata_to = if let Change::Rename {to, ..} = change {
+            let (target_root, relative) = self.metadata_scope(to)?;
+            use std::os::unix::fs::MetadataExt;
+            let from = metadata_root.metadata()?; let to = target_root.metadata()?;
+            if from.dev() != to.dev() || from.ino() != to.ino() { return Err(Error::conflict("METADATA_SCOPE_CROSS_MOVE")); }
+            Some(relative)
+        } else {None};
         let mut metadata = if matches!(change, Change::Rename { .. } | Change::Remove { .. }) {
-            super::metadata::Metadata::existing_write(&self.root)?
+            super::metadata::Metadata::existing_write(&metadata_root)?
         } else {
             None
         };
@@ -103,7 +111,7 @@ impl Export {
                     RenameFlags::NOREPLACE,
                 )?;
                 if let Some(metadata) = metadata.as_mut() {
-                    metadata.rename(path, to).map_err(|_| {
+                    metadata.rename(&metadata_path, metadata_to.as_deref().ok_or_else(Error::internal)?).map_err(|_| {
                         revisions.invalidate();
                         Error::partial("FILE_METADATA_MAINTENANCE_FAILED")
                     })?;
@@ -119,7 +127,7 @@ impl Export {
                 };
                 rustix::fs::unlinkat(&directory, name.as_str(), flags)?;
                 if let Some(metadata) = metadata.as_ref() {
-                    metadata.remove(path).map_err(|_| {
+                    metadata.remove(&metadata_path).map_err(|_| {
                         revisions.invalidate();
                         Error::partial("FILE_METADATA_MAINTENANCE_FAILED")
                     })?;
@@ -132,9 +140,9 @@ impl Export {
             } => {
                 self.open_path(path, OFlags::PATH)?;
                 if !patch.is_empty() || !remove.is_empty() {
-                    let mut metadata = super::metadata::Metadata::open(&self.root, true)?
+                    let mut metadata = super::metadata::Metadata::open(&metadata_root, true)?
                         .ok_or_else(Error::internal)?;
-                    metadata.patch(path, patch, remove)?;
+                    metadata.patch(&metadata_path, patch, remove)?;
                 }
             }
         }

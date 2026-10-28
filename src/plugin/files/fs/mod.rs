@@ -10,6 +10,7 @@
 
 pub mod export;
 mod metadata;
+mod metadata_scope;
 pub mod model;
 pub mod mutation;
 pub mod path;

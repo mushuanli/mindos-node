@@ -47,8 +47,11 @@ access = "rw"                        # 默认 ro；rw 自动加独占锁
 
 旧 version-1 元数据库可能没有 `identity` 列。读取时兼容该布局且不改库；首次 metadata 写入在事务中补列并分配稳定身份，保留原有 metadata。迁移记录 `metadata.schema.upgraded`，SQLite 失败记录 `metadata.database.failed` 的安全错误类别，不记录正文。
 
-每个 export 根对应一个 metadata 存储边界。首次通过 VFS 写入自定义 metadata 时，远程节点在
-`<export-root>/.nestos/meta.sqlite` 创建 SQLite；普通文件读取、stat、列表和未使用 metadata 的目录不创建它。
+可写目录注册为项目时，节点在实际项目根创建 `.nestos/meta.sqlite`，子目录项目也使用自己的存储边界。
+注册、配置、重新挂载及启动恢复均维护项目名称和身份；注册信息按远端主体隔离，不代替授权目录。
+已有 `.mindos/` 整目录改名保留文件；父范围中的 metadata 转入项目范围，文件稳定身份不变。
+未注册项目的文件沿用 export 根存储，普通读取不创建数据库；只读项目不会创建目录。
+同范围重命名维护记录；跨范围移动明确拒绝，避免遗失 metadata。取消注册保留项目 metadata。
 `ro` 可以读取已有 metadata，但不能写入或创建数据库；`rw` 仍必须同时通过 export、认证身份与项目挂载授权。
 这项能力不需要新增 TOML 开关，也不是只针对 AI Chat 的私有存储。
 

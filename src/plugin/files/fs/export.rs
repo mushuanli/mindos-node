@@ -99,9 +99,10 @@ impl Export {
                     .metadata_gate
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                if let Some(store) = super::metadata::Metadata::open(&self.root, false)? {
-                    stat.metadata = store.read(path)?;
-                    stat.source_identity = store.identity(path)?;
+                let (metadata_root, relative) = self.metadata_scope(path)?;
+                if let Some(store) = super::metadata::Metadata::open(&metadata_root, false)? {
+                    stat.metadata = store.read(&relative)?;
+                    stat.source_identity = store.identity(&relative)?;
                 }
                 Ok(Some(stat))
             }

@@ -95,6 +95,9 @@ impl NodePlugin for Projects {
             .insert(Arc::new(crate::projects::ProjectService::open(
                 projects, config,
             )?))?;
+        state.services.get::<crate::projects::ProjectService>()
+            .ok_or("Project service unavailable")?.restore_metadata(state)
+            .map_err(|_| "Project metadata initialization failed")?;
         Ok(())
     }
 }

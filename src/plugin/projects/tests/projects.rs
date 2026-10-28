@@ -444,3 +444,153 @@ async fn native_project_bash_and_codex_share_directory_grants() {
         .close()
         .await;
 }
+
+fn patch_note(export: &nestos_node::fs::Export, path: &str) {
+    export
+        .apply(
+            &nestos_node::fs::mutation::Change::Metadata {
+                path: path.into(),
+                patch: json!({"_document_chat":{"session":"stable-session"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                remove: vec![],
+            },
+            || Ok(()),
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn project_scope_moves_ancestor_metadata_and_preserves_identity_across_remount() {
+    use nestos_node::fs::mutation::Change;
+    let root = tempfile::tempdir().unwrap();
+    let config = deployment(root.path());
+    let state = State::from_config(&config).unwrap();
+    let export = state.exports.get("home").unwrap();
+    let path = "group/existing/note.md";
+    std::fs::write(root.path().join("exports").join(path), "note").unwrap();
+    patch_note(export, path);
+    let before = export.stat(path).unwrap().unwrap();
+    let project = register(&state, "group/existing", false).await;
+    let scoped = root
+        .path()
+        .join("exports/group/existing/.nestos/meta.sqlite");
+    let db = rusqlite::Connection::open(&scoped).unwrap();
+    let (relative, identity): (String, String) = db
+        .query_row("SELECT path,identity FROM file_metadata", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(relative, "note.md");
+    assert_eq!(Some(identity), before.source_identity);
+    let parent =
+        rusqlite::Connection::open(root.path().join("exports/.nestos/meta.sqlite")).unwrap();
+    assert_eq!(
+        parent
+            .query_row::<i64, _, _>("SELECT count(*) FROM file_metadata", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        export.stat(path).unwrap().unwrap().metadata,
+        before.metadata
+    );
+    assert_eq!(
+        export
+            .apply(
+                &Change::Rename {
+                    path: path.into(),
+                    to: "outside.md".into()
+                },
+                || Ok(())
+            )
+            .unwrap_err()
+            .code,
+        "METADATA_SCOPE_CROSS_MOVE"
+    );
+    assert!(root.path().join("exports").join(path).exists());
+    export
+        .apply(
+            &Change::Rename {
+                path: path.into(),
+                to: "group/existing/renamed.md".into(),
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    let readonly = remount(&state, &project, "ro").await.unwrap()["project"].clone();
+    remount(&state, &readonly, "rw").await.unwrap();
+    assert_eq!(
+        export
+            .stat("group/existing/renamed.md")
+            .unwrap()
+            .unwrap()
+            .source_identity,
+        before.source_identity
+    );
+}
+
+#[tokio::test]
+async fn project_scope_migrates_legacy_directory_and_keeps_owner_records_separate() {
+    let root = tempfile::tempdir().unwrap();
+    let config = deployment(root.path());
+    let project_root = root.path().join("exports/group/existing");
+    std::fs::write(project_root.join("note.md"), "note").unwrap();
+    {
+        let export = nestos_node::fs::Export::exclusive(&project_root).unwrap();
+        patch_note(&export, "note.md");
+    }
+    std::fs::write(project_root.join(".nestos/info.seq"), "preserved-sequence").unwrap();
+    std::fs::rename(project_root.join(".nestos"), project_root.join(".mindos")).unwrap();
+    let state = State::from_config(&config).unwrap();
+    let project = register(&state, "group/existing", false).await;
+    assert!(!project_root.join(".mindos").exists());
+    assert_eq!(
+        std::fs::read_to_string(project_root.join(".nestos/info.seq")).unwrap(),
+        "preserved-sequence"
+    );
+    let export = state.exports.get("home").unwrap();
+    let id = project["id"].as_str().unwrap();
+    export
+        .initialize_metadata_scope(
+            "group/existing",
+            "other-server:other-owner",
+            id,
+            &json!({"name":"Other"}),
+        )
+        .unwrap();
+    let db = rusqlite::Connection::open(project_root.join(".nestos/meta.sqlite")).unwrap();
+    let names: Vec<String> = db
+        .prepare("SELECT json_extract(value,'$.name') FROM scope_info ORDER BY owner")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(names, vec!["Other", "Notes"]);
+    assert_eq!(
+        export
+            .stat("group/existing/note.md")
+            .unwrap()
+            .unwrap()
+            .metadata["_document_chat"]["session"],
+        "stable-session"
+    );
+}
+
+#[tokio::test]
+async fn readonly_project_does_not_create_metadata_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let state = State::from_config(&deployment(root.path())).unwrap();
+    call(
+        &state,
+        0,
+        "project_register",
+        json!({"name":"Reference","alias":"home","path":"group/existing","access":"ro"}),
+    )
+    .await
+    .unwrap();
+    assert!(!root.path().join("exports/group/existing/.nestos").exists());
+    assert!(!root.path().join("exports/group/existing/.mindos").exists());
+}

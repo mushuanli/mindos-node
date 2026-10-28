@@ -60,6 +60,16 @@ impl ProjectService {
             owners: crate::config::authorization::identity_ids(deployment),
         })
     }
+    pub fn restore_metadata(&self, state: &State) -> Result<(), Error> {
+        for project in self.store.all()? {
+            let Some(identity) = self.owners.iter().position(|owner| owner == &project.owner) else {continue};
+            if let Err(error) = authorize(state, identity, &project).and_then(|_| maintain_metadata(state, identity, &project)) {
+                crate::core::events::emit(crate::core::events::Level::Warn, "project.metadata.restore.failed",
+                    serde_json::json!({"projectId":project.id,"code":error.code}));
+            }
+        }
+        Ok(())
+    }
     pub fn list(&self, identity: usize) -> Result<Vec<Project>, Error> {
         let owner = self.owner(identity)?;
         Ok(self
@@ -95,6 +105,7 @@ impl ProjectService {
             .find(|p| p.alias == input.alias && p.path == input.path)
         {
             authorize(state, identity, &project)?;
+            maintain_metadata(state, identity, &project)?;
             return Ok(project);
         }
         let mut bytes = [0u8; 16];
@@ -139,6 +150,7 @@ impl ProjectService {
         }
         capture(state, &mut project)?;
         validate(state, identity, &project, true)?;
+        maintain_metadata(state, identity, &project)?;
         self.store.save(project, None)
     }
     pub fn forget(&self, identity: usize, id: &str, revision: u64) -> Result<(), Error> {
@@ -164,6 +176,7 @@ impl ProjectService {
         project.revision += 1;
         capture(state, &mut project)?;
         validate(state, identity, &project, true)?;
+        maintain_metadata(state, identity, &project)?;
         self.store.save(project, Some(revision))
     }
     pub fn remount(
@@ -185,9 +198,11 @@ impl ProjectService {
         project.access = access.into();
         validate(state, identity, &project, true)?;
         if self.get(identity, id)?.access == access {
+            maintain_metadata(state, identity, &project)?;
             return Ok(project);
         }
         project.revision += 1;
+        maintain_metadata(state, identity, &project)?;
         self.store.save(project, Some(revision))
     }
 }
@@ -387,4 +402,17 @@ pub fn request(
         mounts: mounts(project),
         timeout_ms,
     }
+}
+
+fn maintain_metadata(state: &State, identity: usize, project: &Project) -> Result<(), Error> {
+    if effective(state, identity, project).access != "rw" { return Ok(()); }
+    let started = std::time::Instant::now();
+    let export = state.exports.get(&project.alias).ok_or_else(Error::invalid)?;
+    let owner = format!("{}:{}", state.auth.server_id().unwrap_or(""), project.owner);
+    let value = serde_json::json!({"version":1,"id":project.id,"name":project.name,"alias":project.alias,"path":project.path});
+    let result = export.initialize_metadata_scope(&project.path, &owner, &project.id, &value);
+    crate::core::events::emit(if result.is_ok() {crate::core::events::Level::Info} else {crate::core::events::Level::Error},
+        "project.metadata.prepare", serde_json::json!({"projectId":project.id,"stage":"directory-scope",
+        "result":if result.is_ok() {"success"} else {"failure"},"code":result.as_ref().err().map(|e|e.code),"elapsedMs":started.elapsed().as_millis()}));
+    result
 }

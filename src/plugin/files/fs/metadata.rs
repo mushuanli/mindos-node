@@ -115,6 +115,36 @@ impl Metadata {
             _directory: directory,
         }))
     }
+    pub(super) fn is_scope(&self) -> Result<bool, Error> {
+        self.database.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='scope_info' AND type='table')", [], |row| row.get(0)).map_err(sql)
+    }
+    pub(super) fn set_scope_info(&mut self, owner: &str, key: &str, value: &Value) -> Result<(), Error> {
+        let tx = self.database.transaction().map_err(sql)?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS scope_info(owner TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(owner,key));").map_err(sql)?;
+        tx.execute("INSERT INTO scope_info VALUES(?1,?2,?3) ON CONFLICT(owner,key) DO UPDATE SET value=excluded.value", params![owner,key,value.to_string()]).map_err(sql)?;
+        tx.commit().map_err(sql)
+    }
+    pub(super) fn transfer_scope(&mut self, target: &mut Self, prefix: &str) -> Result<(), Error> {
+        // Publication of all records is atomic. A retried registration never overwrites newer scoped records.
+        let source = self.database.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(sql)?;
+        {
+            let rows = {
+                let mut statement = source.prepare("SELECT substr(path,length(?1)+2),data,identity FROM file_metadata WHERE substr(path,1,length(?1)+1)=?1||'/'").map_err(sql)?;
+                let rows = statement.query_map([prefix], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).map_err(sql)?;
+                rows.collect::<Result<Vec<_>,_>>().map_err(sql)?
+            };
+            let tx = target.database.transaction().map_err(sql)?;
+            for (path,data,identity) in rows {
+                let prior: Option<(String,String)> = tx.query_row("SELECT data,identity FROM file_metadata WHERE path=?1", [&path], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(sql)?;
+                if prior.as_ref().is_some_and(|prior| prior != &(data.clone(),identity.clone())) { return Err(Error::conflict("METADATA_SCOPE_CONFLICT")); }
+                tx.execute("INSERT OR IGNORE INTO file_metadata(path,data,identity) VALUES(?1,?2,?3)", params![path,data,identity]).map_err(sql)?;
+            }
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS scope_info(owner TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(owner,key));").map_err(sql)?;
+            tx.commit().map_err(sql)?;
+        }
+        source.execute("DELETE FROM file_metadata WHERE substr(path,1,length(?1)+1)=?1||'/'", [prefix]).map_err(sql)?;
+        source.commit().map_err(sql)
+    }
     pub fn existing_write(root: &File) -> Result<Option<Self>, Error> {
         if Self::open(root, false)?.is_none() {
             return Ok(None);
@@ -225,7 +255,7 @@ fn sql(error: rusqlite::Error) -> Error {
 }
 
 // Continue an existing export's metadata store; never silently create a second identity namespace.
-fn metadata_directory(root: &File) -> Result<&'static str, Error> {
+pub(super) fn metadata_directory(root: &File) -> Result<&'static str, Error> {
     let mut found = None;
     for name in [DIRECTORY, ".mindos"] {
         match rustix::fs::openat(root, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()) {
